@@ -14,7 +14,7 @@ typedef void  (*FreeFunc)  (void*);
 
 void log_error_impl(const char *fmt, ...) {
     va_list ap;
-    fputs("error: ", stderr);
+    fputs("\nerror: ", stderr);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -40,6 +40,7 @@ void log_error_impl(const char *fmt, ...) {
 
 #define log_error(...)      do { log_error_impl(__VA_ARGS__);  } while (0)
 #define critical_error(...) do { log_error_impl(__VA_ARGS__); ERROR_ABORT(); } while (0)
+#define not_implemented()   critical_error("NOT IMPLEMENTED %s(%d)\n", __FILE__, __LINE__)
 
 struct MemoryArena {
     size_t index;
@@ -105,7 +106,8 @@ void print_byte(u8 b, FILE* stream = stdout) {
     fputs(N2B[b&0xF], stream);
 }
 
-#define OPCODE_MOV_REGISTER_TO_REGISTER 0x88
+#define OPCODE_MOV_REGISTER_TO_REGISTER  0x88
+#define OPCODE_MOV_IMMEDIATE_TO_REGISTER 0xB0
 
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
@@ -134,6 +136,17 @@ const char* register_map_word[8] = {
     "di"
 };
 
+const char* effective_address_table[8] = {
+    "bx + si",
+    "bx + di",
+    "bp + si",
+    "bp + di",
+    "si",
+    "di",
+    "bp",
+    "bx"
+};
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
@@ -152,35 +165,65 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < file.size;) {
         u8* bytes = &file.buffer[i];
         
-        //print_byte(byte);
-        u8 opcode_mask = 0xFC;
-        u8 dir_mask    = 0x02;
-        u8 word_mask   = 0x01;
-        u8 reg_mask    = 0x38;
-        u8 rm_mask     = 0x07;
+        if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_TO_REGISTER) {
 
-        if ((bytes[0] & opcode_mask) == OPCODE_MOV_REGISTER_TO_REGISTER) {
-
+            u8 word_mask   = 0x01;
+            u8 dir_mask    = 0x02;
+            u8 reg_mask    = 0x38;
+            u8 rm_mask     = 0x07;
+    
             const char** reg_table = (bytes[0] & word_mask) ? register_map_word : register_map_byte; 
             
             u8 mode = bytes[1] >> 6;
+            u8 reg  = (bytes[1] & reg_mask) >> 3; 
+            u8 rm   = bytes[1] & rm_mask;
+
             switch (mode) {
                 case MODE_MEMORY_NO_DISPLACEMENT: {
-                    critical_error("NOT_IMPLEMENTED");
+                    const char* effective_address = effective_address_table[rm];
+                    
+                    if (rm == 6) {
+                        not_implemented();
+                    } else if (bytes[0] & dir_mask) {
+                        printf("mov %s, [%s]\n", reg_table[reg], effective_address);
+                    } else {
+                        printf("mov [%s], %s\n", effective_address, reg_table[reg]);
+                    }
+                    
+                    i += 2;
+                    continue;
+                    
                 } break;
                 
                 case MODE_MEMORY_8_BIT_DISPLACEMENT: {
-                    critical_error("NOT_IMPLEMENTED");
+                    const char* effective_address = effective_address_table[rm];
+                    u8 displacement = bytes[2];
+
+                    if (bytes[0] & dir_mask) {
+                        printf("mov %s, [%s + %hhu]\n", reg_table[reg], effective_address, displacement);
+                    } else {
+                        printf("mov [%s + %hhu], %s\n", effective_address, displacement, reg_table[reg]);
+                    }
+
+                    i += 3;
+                    continue;
                 } break;
                 
                 case MODE_MEMORY_16_BIT_DISPLACEMENT: {
-                    critical_error("NOT_IMPLEMENTED");
+                    const char* effective_address = effective_address_table[rm];
+                    u16 displacement = bytes[2] | (bytes[3] << 8);
+
+                    if (bytes[0] & dir_mask) {
+                        printf("mov %s, [%s + %hu]\n", reg_table[reg], effective_address, displacement);
+                    } else {
+                        printf("mov [%s + %hu], %s\n", effective_address, displacement, reg_table[reg]);
+                    }
+                
+                    i += 4;
+                    continue;
                 } break;
                 
                 case MODE_REGISTER: {
-                    u8 reg = (bytes[1] & reg_mask) >> 3; 
-                    u8 rm  = bytes[1] & rm_mask;
-
                     const char* source;
                     const char* dest;
                     
@@ -191,13 +234,32 @@ int main(int argc, char* argv[]) {
                         source = reg_table[reg];
                         dest   = reg_table[rm];
                     }
-
+                
                     printf("mov %s, %s\n", dest, source);
-                    
                     i += 2;
                     continue;
                 } break;
-            }            
+            }
+                        
+        } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
+            u8 reg  = bytes[0] & 0x07;
+            u8 word = bytes[0] & 0x08;
+
+            const char** reg_table = word ? register_map_word : register_map_byte; 
+            printf("mov %s, ", reg_table[reg]);
+            
+            if (word) {
+                u16 data = bytes[1] | (bytes[2] << 8);
+                printf("%hu\n", data);
+                i += 3;
+                
+            } else {
+                u8 data = bytes[1];
+                printf("%hhu\n", data);
+                i += 2;
+            }
+            
+            continue;
         }
         
         fputs("Unable to decode byte: ", stderr);
