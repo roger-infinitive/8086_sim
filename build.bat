@@ -10,15 +10,17 @@ set BUILD_DIR=build
 set BUILD_FLAGS=/MD /O2 /GL /Ob2 /Oy
 set LIB_PATH=libraries/x64
 set EXE_NAME=8086_decoder
-set OUTPUT_NAME=%BUILD_DIR%\%EXE_NAME%.exe
+
+set ROOT=%~dp0
+set OUTPUT_EXE=%ROOT%%EXE_NAME%.exe
 
 REM Check arguments
 for %%a in (%*) do (
     if "%%a"=="Debug" (
-    	set BUILD_FLAGS=/Od /Zi /MDd /D "_DEBUG"
-		set PDB_PATH=%BUILD_DIR%\vc140.pdb
-    	set LIB_PATH=libraries/debug/x64
-    	set OUTPUT_NAME=%BUILD_DIR%\%EXE_NAME%_Debug.exe
+		set BUILD_FLAGS=/Od /Zi /MDd /D "_DEBUG"
+		set LIB_PATH=libraries/debug/x64
+		set LINK_DEBUG_OPTS=/DEBUG
+		set PDB_OPT=/PDB:"%BUILD_DIR%\%EXE_NAME%.pdb"
     	echo Using DEBUG build
     )
 )
@@ -35,11 +37,14 @@ if not exist "%VCVARS_PATH%" (
 REM Set up the Visual Studio envionment (for cl command)
 call "%VCVARS_PATH%" x64
 
-cl %BUILD_FLAGS% /I "include" /Fd"%PDB_PATH%" /Fo:%BUILD_DIR%/ /Fe:"%OUTPUT_NAME%" ^
-src/main.cpp ^
-/link /LIBPATH:"%LIB_PATH%"
-
-@echo off
+cl %BUILD_FLAGS% ^
+	/I"include" ^
+	/Fo"%BUILD_DIR%\\" ^
+	/Fe"%OUTPUT_EXE%" ^
+	src/main.cpp ^
+	/link /LIBPATH:"%LIB_PATH%" ^
+		%PDB_OPT% %LINK_DEBUG_OPTS% ^
+		/INCREMENTAL:NO
 
 REM Check for compile errors
 if errorlevel 1 (

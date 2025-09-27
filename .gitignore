@@ -1,11 +1,10 @@
 *.suo
 *.obj
+*.exe
+*.pdb
+*.ilk
+*.sln
+*.rdi
 
-config.bat
-ogl_renderer.exe
-
-build/vc140.pdb
-build/ogl_renderer_debug.exe
-build/ogl_renderer_debug.pdb
-build/ogl_renderer_debug.ilk
-build/ogl_renderer_debug.sln
+test
+test.asm

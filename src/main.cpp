@@ -1,357 +1,210 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
-#include <cstring>
-#include <assert.h>
+#include <errno.h>
+#include <string.h>
 
-#define OPCODE_MOV_REGISTER_MEMORY_TO_FROM_REGISTER 0x22
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER            0x0B
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY     0x63
-#define OPCODE_MOV_MEMORY_TO_ACCUMULATOR            0x50
-#define OPCODE_MOV_ACCUMULATOR_TO_MEMORY            0x51
+#define u8  unsigned char
+#define u16 unsigned short
+#define u32 unsigned int
+#define u64 unsigned long long
 
-const char* RegisterMap0[8] = {
-	"al",
-	"cl",
-	"dl",
-	"bl",
-	"ah",
-	"ch",
-	"dh",
-	"bh"
+typedef void* (*AllocFunc) (size_t size);
+typedef void  (*FreeFunc)  (void*);
+
+void log_error_impl(const char *fmt, ...) {
+    va_list ap;
+    fputs("error: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
+#ifdef _MSC_VER
+    #include <intrin.h>
+    #define BREAKPOINT() __debugbreak()
+#elif defined(__has_builtin) && __has_builtin(__builtin_trap)
+    #define BREAKPOINT() __builtin_trap()
+#else
+    #include <signal.h>
+    #define BREAKPOINT() raise(SIGTRAP)
+#endif
+
+#if defined(NDEBUG)
+    #define ERROR_ABORT() exit(1)
+#else
+    #define ERROR_ABORT() BREAKPOINT();
+#endif 
+
+#define log_error(...)      do { log_error_impl(__VA_ARGS__);  } while (0)
+#define critical_error(...) do { log_error_impl(__VA_ARGS__); ERROR_ABORT(); } while (0)
+
+struct MemoryArena {
+    size_t index;
+    size_t capacity;
+    u8* buffer;    
 };
 
-const char* RegisterMap1[8] = {
-	"ax",
-	"cx",
-	"dx",
-	"bx",
-	"sp",
-	"bp",
-	"si",
-	"di"
+void init_arena(MemoryArena* arena, size_t size) {
+    arena->index = 0;
+    arena->capacity = size;
+    arena->buffer = (u8*)malloc(size);
+}
+
+void* arena_alloc(MemoryArena* arena, size_t size) {
+    if (arena->index + size >= arena->capacity) {
+        critical_error("arena is out of memory! attempted to allocate %llu.", size);
+        return 0;
+    }
+    
+    void* mem = &arena->buffer[arena->index];
+    arena->index += size;
+    
+    return mem;
+}
+
+struct MemoryBuffer {
+    size_t size;
+    u8* buffer;
+};
+
+bool read_entire_file(MemoryBuffer* fileBuffer, const char* filename, AllocFunc mem_alloc) {
+    FILE* file = fopen(filename, "rb");
+    if (file == 0) {
+        log_error("Failed to open file %s (%s)", filename, strerror(errno));    
+        return false;
+    }
+    
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+	rewind(file);
+    
+    fileBuffer->buffer = (u8*)mem_alloc(fileSize);
+    fread(fileBuffer->buffer, 1, fileSize, file);
+    fileBuffer->size = fileSize;
+
+    fclose(file);
+    return true;
+}
+
+MemoryArena main_arena = {};
+
+void* main_arena_alloc(size_t size) {
+    return arena_alloc(&main_arena, size);
+}
+
+const char* N2B[16] = {
+    "0000","0001","0010","0011","0100","0101","0110","0111",
+    "1000","1001","1010","1011","1100","1101","1110","1111"
+};
+
+void print_byte(u8 b, FILE* stream = stdout) {
+    fputs(N2B[b>>4], stream);
+    fputs(N2B[b&0xF], stream);
+}
+
+#define OPCODE_MOV_REGISTER_TO_REGISTER 0x88
+
+#define MODE_MEMORY_NO_DISPLACEMENT     0
+#define MODE_MEMORY_8_BIT_DISPLACEMENT  1
+#define MODE_MEMORY_16_BIT_DISPLACEMENT 2
+#define MODE_REGISTER                   3
+
+const char* register_map_byte[8] = { 
+    "al", 
+    "cl", 
+    "dl", 
+    "bl", 
+    "ah", 
+    "ch", 
+    "dh", 
+    "bh" 
+};
+
+const char* register_map_word[8] = {
+    "ax",
+    "cx",
+    "dx",
+    "bx",
+    "sp",
+    "bp",
+    "si",
+    "di"
 };
 
 int main(int argc, char* argv[]) {
-	if (argc < 2) {
-		printf("Usage: %s <filename>\n", argv[0]);
-		return 1;
-	}
+    if (argc < 2) {
+        printf("Usage: %s <filename>\n", argv[0]);
+        return 1;
+    }
 
-	char* filename = argv[1];
+    init_arena(&main_arena, 32*1024*1024);
+    
+    MemoryBuffer file = {};
+    if (!read_entire_file(&file, argv[1], main_arena_alloc)) {
+        return 1;
+    }
 
-	FILE* file = fopen(filename, "rb");
-	if (file == NULL) {
-		printf("Error opening file.\n");
-		return 1;
-	}
+    printf("bits 16\n");
 
-	//Get the binary size of file
-	fseek(file, 0, SEEK_END);
-	long fileSize = ftell(file);
-	rewind(file);
-
-	//Create a memory buffer and read
-	unsigned char* buffer = (unsigned char*)malloc(fileSize);
-	if (buffer == NULL)
-		return 1;
-
-	size_t bytesRead = fread(buffer, 1, fileSize, file);
-
-	//bit mode for asm.
-	printf("bits 16\n");
-
-	for (unsigned int i = 0; i < fileSize;) {
-        unsigned char opcode = 0;
+    for (int i = 0; i < file.size;) {
+        u8* bytes = &file.buffer[i];
         
-        opcode = buffer[i] >> 1;
-        if ((opcode ^ OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) == 0) {
-            char wide = buffer[i] & 0x01;
-            char mode = buffer[i+1] >> 6;
-            char rm   = buffer[i+1] & 0x07;
+        //print_byte(byte);
+        u8 opcode_mask = 0xFC;
+        u8 dir_mask    = 0x02;
+        u8 word_mask   = 0x01;
+        u8 reg_mask    = 0x38;
+        u8 rm_mask     = 0x07;
+
+        if ((bytes[0] & opcode_mask) == OPCODE_MOV_REGISTER_TO_REGISTER) {
+
+            const char** reg_table = (bytes[0] & word_mask) ? register_map_word : register_map_byte; 
             
-            const char** regs = NULL;
-            regs = wide == 0 ? RegisterMap0 : RegisterMap1;
-            
-            switch(mode) {
-                case 0x00: {
-                    const char* addressCalculation = NULL;
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si]"; break;
-                        case 0x01: addressCalculation = "[bx + di]"; break;
-                        case 0x02: addressCalculation = "[bp + si]"; break;
-                        case 0x03: addressCalculation = "[bp + di]"; break;
-                        case 0x04: addressCalculation = "[si]";      break;
-                        case 0x05: addressCalculation = "[di]";      break;
-                        case 0x06:
-                            assert(false && "Direct Address is not valid for OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY.");
-                        	break;
-                        case 0x07: addressCalculation = "[bx]";      break;
-                    }
-                    
-                    char dataStr[32];
-                    if (wide == 0) {
-                        unsigned char data = buffer[i + 2];
-                        sprintf(dataStr, "byte %d\0", data);
-                        i += 3;
-                    } else {
-                        unsigned short data = *((unsigned short*)(&buffer[i + 2]));
-                        sprintf(dataStr, "word %d\0", data);
-                        i += 4;
-                    }
-                    
-                	printf("\nmov %s, %s", addressCalculation, dataStr);
-                    break;
-                }
-                case 0x01: {
-                    const char* addressCalculation;
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si"; break;
-                        case 0x01: addressCalculation = "[bx + di"; break;
-                        case 0x02: addressCalculation = "[bp + si"; break;
-                        case 0x03: addressCalculation = "[bp + di"; break;
-                        case 0x04: addressCalculation = "[si";      break;
-                        case 0x05: addressCalculation = "[di";      break;
-                        case 0x06: addressCalculation = "[bp";      break;
-                        case 0x07: addressCalculation = "[bx";      break;
-                    }
-                    
-                    char address[32];
-                    char displacement = buffer[i + 2];
-                    if (displacement > 0) {
-                        sprintf(address, "%s + %d]\0", addressCalculation, displacement);
-                    } else {
-                        sprintf(address, "%s - %d]\0", addressCalculation, abs(displacement));
-                    }
-                                   
-                    char dataStr[32];
-                    if (wide == 0) {
-                        unsigned char data = buffer[i + 3];
-                        sprintf(dataStr, "byte %d\0", data);
-                        i += 4;
-                    } else {
-                        unsigned short data = *((unsigned short*)(&buffer[i + 3]));
-                        sprintf(dataStr, "word %d\0", data);
-                        i += 5;
-                    }
-                    
-                	printf("\nmov %s, %s", address, dataStr);
-                    break;
-                }
-                case 0x02: {
-                    const char* addressCalculation;
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si"; break;
-                        case 0x01: addressCalculation = "[bx + di"; break;
-                        case 0x02: addressCalculation = "[bp + si"; break;
-                        case 0x03: addressCalculation = "[bp + di"; break;
-                        case 0x04: addressCalculation = "[si";      break;
-                        case 0x05: addressCalculation = "[di";      break;
-                        case 0x06: addressCalculation = "[bp";      break;
-                        case 0x07: addressCalculation = "[bx";      break;
-                    }
-                    
-                    char address[32];
-                    short displacement = *((short*)(&buffer[i + 2]));
-                    if (displacement > 0) {
-                        sprintf(address, "%s + %d]\0", addressCalculation, displacement);
-                    } else {
-                        sprintf(address, "%s - %d]\0", addressCalculation, abs(displacement));
-                    }
-                                   
-                    char dataStr[32];
-                    if (wide == 0) {
-                        unsigned char data = buffer[i + 4];
-                        sprintf(dataStr, "byte %d\0", data);
-                        i += 5;
-                    } else {
-                        unsigned short data = *((unsigned short*)(&buffer[i + 4]));
-                        sprintf(dataStr, "word %d\0", data);
-                        i += 6;
-                    }
-                    
-                    printf("\nmov %s, %s", address, dataStr);
-                    break;
-                }
-                case 0x03:
-                    assert(false && "MOD 0x03 is not valid for OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY!");
-                    break;
-            }
-        }
-        
-        if ((opcode ^ OPCODE_MOV_MEMORY_TO_ACCUMULATOR) == 0) {
-            char wide = buffer[i] & 0x01;
-            unsigned short address = *((unsigned short*)(&buffer[i+1]));
-            const char* reg;
-            if (wide == 0) {
-                reg = "al";
-            } else {
-                reg = "ax";
-            }
-            printf("\nmov %s, [%u]", reg, address);
-            i += 3;
-        }
-        
-        if ((opcode ^ OPCODE_MOV_ACCUMULATOR_TO_MEMORY) == 0) {
-            char wide = buffer[i] & 0x01;
-            unsigned short address = *((unsigned short*)(&buffer[i+1]));
-            const char* reg;
-            if (wide == 0) {
-                reg = "al";
-            } else {
-                reg = "ax";
-            }
-            printf("\nmov [%u], %s", address, reg);
-            i += 3;
-        }
-        
-		opcode = buffer[i] >> 2;
-		if ((opcode ^ OPCODE_MOV_REGISTER_MEMORY_TO_FROM_REGISTER) == 0) {
-			unsigned char dir  = (buffer[i] & 0x02) >> 1;
-			unsigned char wide = buffer[i] & 0x01;
-			unsigned char mode = buffer[i+1] >> 6;
-			unsigned char reg  = (buffer[i+1] & 0x38) >> 3;
-			unsigned char rm   = (buffer[i+1] & 0x07);
+            u8 mode = bytes[1] >> 6;
+            switch (mode) {
+                case MODE_MEMORY_NO_DISPLACEMENT: {
+                    critical_error("NOT_IMPLEMENTED");
+                } break;
+                
+                case MODE_MEMORY_8_BIT_DISPLACEMENT: {
+                    critical_error("NOT_IMPLEMENTED");
+                } break;
+                
+                case MODE_MEMORY_16_BIT_DISPLACEMENT: {
+                    critical_error("NOT_IMPLEMENTED");
+                } break;
+                
+                case MODE_REGISTER: {
+                    u8 reg = (bytes[1] & reg_mask) >> 3; 
+                    u8 rm  = bytes[1] & rm_mask;
 
-			const char** regs = NULL;
-            regs = wide == 0 ? RegisterMap0 : RegisterMap1; 
-
-			switch (mode) {
-				//Memory Mode (no displacement with exception for Direct Address)
-				case 0x00:
-				{
-                    const char* addressCalculation = NULL;
-                    char directAddress[32];
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si]"; break;
-                        case 0x01: addressCalculation = "[bx + di]"; break;
-                        case 0x02: addressCalculation = "[bp + si]"; break;
-                        case 0x03: addressCalculation = "[bp + di]"; break;
-                        case 0x04: addressCalculation = "[si]";      break;
-                        case 0x05: addressCalculation = "[di]";      break;
-                        case 0x06: {
-                            short displacement = *((short*)(&buffer[i + 2]));
-                            sprintf(directAddress, "[%d]\0", displacement); 
-                            addressCalculation = directAddress;
-                            i += 2;
-                        	break;
-                        }
-                        case 0x07: addressCalculation = "[bx]";      break;
-                    }
-                    
-                    const char* regStr = regs[reg];
-                    if (dir == 1) {
-                    	printf("\nmov %s, %s", regStr, addressCalculation);
-                    } else {
-                    	printf("\nmov %s, %s", addressCalculation, regStr);
-                    }
-                    i += 2;
-                    break;
-				}
-				case 0x01: // Memory mode, 8 bit displacement
-				{
-                    const char* addressCalculation;
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si"; break;
-                        case 0x01: addressCalculation = "[bx + di"; break;
-                        case 0x02: addressCalculation = "[bp + si"; break;
-                        case 0x03: addressCalculation = "[bp + di"; break;
-                        case 0x04: addressCalculation = "[si";      break;
-                        case 0x05: addressCalculation = "[di";      break;
-                        case 0x06: addressCalculation = "[bp";      break;
-                        case 0x07: addressCalculation = "[bx";      break;
-                    }
-
-                    char address[32];
-                    char displacement = buffer[i + 2];
-                    if (displacement > 0) {
-                        sprintf(address, "%s + %d]\0", addressCalculation, displacement);
-                    } else {
-                        sprintf(address, "%s - %d]\0", addressCalculation, abs(displacement));
-                    }
-
-					const char* regStr = regs[reg];
-					if (dir == 1) {
-						printf("\nmov %s, %s", regStr, address);
-					} else {
-						printf("\nmov %s, %s", address, regStr);
-					}
-					i += 3;
-					break;
-				}
-				case 0x02: //Memory mode, 16 bit displacement
-				{
-                    const char* addressCalculation;
-                    switch (rm) {
-                        case 0x00: addressCalculation = "[bx + si"; break;
-                        case 0x01: addressCalculation = "[bx + di"; break;
-                        case 0x02: addressCalculation = "[bp + si"; break;
-                        case 0x03: addressCalculation = "[bp + di"; break;
-                        case 0x04: addressCalculation = "[si";      break;
-                        case 0x05: addressCalculation = "[di";      break;
-                        case 0x06: addressCalculation = "[bp";      break;
-                        case 0x07: addressCalculation = "[bx";      break;
-                    }
-
-                    char address[32];
-                    short displacement = *((short*)(&buffer[i + 2]));
-                    if (displacement > 0) {
-                        sprintf(address, "%s + %d]\0", addressCalculation, displacement);
-                    } else {
-                        sprintf(address, "%s - %d]\0", addressCalculation, abs(displacement));
-                    }
-
-					const char* regStr = regs[reg];
-					if (dir == 1) {
-						printf("\nmov %s, %s", regStr, address);
-					} else {
-						printf("\nmov %s, %s", address, regStr);
-					}
-					i += 4;
-					break;
-				}
-				case 0x03:
-				{
                     const char* source;
                     const char* dest;
-                    if (dir == 0) {
-                    	source = regs[reg];
-                    	dest = regs[rm];
-                    }
-                    else {
-                    	source = regs[rm];
-                    	dest = regs[reg];
-                    }
                     
-                    printf("\nmov %s, %s", dest, source);
+                    if (bytes[0] & dir_mask) {
+                        source = reg_table[rm];
+                        dest   = reg_table[reg];
+                    } else {
+                        source = reg_table[reg];
+                        dest   = reg_table[rm];
+                    }
+
+                    printf("mov %s, %s\n", dest, source);
+                    
                     i += 2;
-                    break;
-				}
-			}
-		}
+                    continue;
+                } break;
+            }            
+        }
         
-        opcode = buffer[i] >> 4;
-        if ((opcode ^ OPCODE_MOV_IMMEDIATE_TO_REGISTER) == 0) {
-            unsigned char wide = buffer[i] & 0x08;
-            unsigned char reg  = buffer[i] & 0x07;
-        
-            unsigned short data = 0;
-            const char* regStr = NULL;
-            if (wide == 0) {
-                regStr = RegisterMap0[reg];
-                data = buffer[i + 1];
-                i += 2;
-            } else {
-                regStr = RegisterMap1[reg];
-                data = *((unsigned short*)(&buffer[i + 1]));
-                i += 3;
-            }
+        fputs("Unable to decode byte: ", stderr);
+        print_byte(bytes[0], stderr);
+        fputc('\n', stderr);
+        ERROR_ABORT();
+    }
 
-			printf("\nmov %s, %i", regStr, data);
-		}
-	}
-
-	fclose(file);
-	return 0;
+    return 0;
 }
