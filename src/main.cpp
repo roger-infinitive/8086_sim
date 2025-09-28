@@ -230,23 +230,23 @@ int main(int argc, char* argv[]) {
             u8 mode = bytes[1] >> 6;
             u8 rm   = bytes[1] & 0x07;
             
-            int byte_index = 2; 
+            int byte_count = 2; 
             
             short displacement = 0;
             if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
                 not_implemented();
             
             } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                u8 sign = bytes[byte_index] & 0x80;
+                u8 sign = bytes[byte_count] & 0x80;
                 if (sign) {
                     displacement = 0xFF00;
                 }
-                displacement |= bytes[byte_index];
-                byte_index += 1;
+                displacement |= bytes[byte_count];
+                byte_count += 1;
             
             } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                displacement = bytes[byte_index] | (bytes[byte_index + 1] << 8);
-                byte_index += 2;
+                displacement = bytes[byte_count] | (bytes[byte_count + 1] << 8);
+                byte_count += 2;
             } 
             
             char address_operand[32];
@@ -259,37 +259,40 @@ int main(int argc, char* argv[]) {
             
             u16 data = 0;
             if (word) {
-                data = bytes[byte_index] | (bytes[byte_index + 1] << 8);
-                byte_index++; 
+                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
+                byte_count += 2; 
             } else {
-                data = bytes[byte_index];
+                data = bytes[byte_count];
+                byte_count += 1;
             }
             
             const char* size_label = word ? "word" : "byte";
-                
             printf("mov %s, %s %hu\n", address_operand, size_label, data);
-            
-            i += byte_index + 1;
+
+            i += byte_count;
             continue;
             
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
             u8 reg  = bytes[0] & 0x07;
             u8 word = bytes[0] & 0x08;
+            int byte_count = 1;
 
             const char** reg_table = word ? register_map_word : register_map_byte; 
             printf("mov %s, ", reg_table[reg]);
             
+            u16 data = 0;
             if (word) {
-                u16 data = bytes[1] | (bytes[2] << 8);
-                printf("%hu\n", data);
-                i += 3;
-                
+                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
+                byte_count += 2;
             } else {
-                u8 data = bytes[1];
-                printf("%hhu\n", data);
-                i += 2;
+                data = bytes[byte_count];
+                byte_count += 1;
             }
             
+            const char* size_label = word ? "word" : "byte";
+            printf("%s %hu\n", size_label, data);
+        
+            i += byte_count;    
             continue;
         }
         
