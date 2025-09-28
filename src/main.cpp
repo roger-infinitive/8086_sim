@@ -169,17 +169,15 @@ int main(int argc, char* argv[]) {
         
         if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER) {
 
-            u8 word_mask   = 0x01;
-            u8 dir_mask    = 0x02;
-            u8 reg_mask    = 0x38;
-            u8 rm_mask     = 0x07;
-    
-            const char** reg_table = (bytes[0] & word_mask) ? register_map_word : register_map_byte; 
-            
-            u8 dir  = bytes[0] & dir_mask;
+            u8 word = bytes[0] & 0x01;
+            u8 dir  = bytes[0] & 0x02;
             u8 mode = bytes[1] >> 6;
-            u8 reg  = (bytes[1] & reg_mask) >> 3; 
-            u8 rm   = bytes[1] & rm_mask;
+            u8 reg  = (bytes[1] & 0x38) >> 3; 
+            u8 rm   = bytes[1] & 0x07;
+            
+            int byte_count = 2;
+    
+            const char** reg_table = word ? register_map_word : register_map_byte; 
             
             if (mode == MODE_REGISTER) {
                 const char* r1 = reg_table[reg];
@@ -197,7 +195,7 @@ int main(int argc, char* argv[]) {
                 if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
                     displacement = bytes[2] | (bytes[3] << 8);                    
                     sprintf(address_operand, "[%hd]", displacement);
-                    i += 2;
+                    byte_count += 2;
 
                 } else {
                     if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
@@ -206,11 +204,11 @@ int main(int argc, char* argv[]) {
                             displacement = 0xFF00;
                         }
                         displacement |= bytes[2];
-                        i += 1;
+                        byte_count += 1;
                     
                     } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
                         displacement = bytes[2] | (bytes[3] << 8);
-                        i += 2;
+                        byte_count += 2;
                     }                    
                 
                     const char* effective_address = effective_address_table[rm];
@@ -228,7 +226,7 @@ int main(int argc, char* argv[]) {
                 printf("mov %s, %s\n", dest, source);
             }
             
-            i += 2;
+            i += byte_count;
             continue;
         
         } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
