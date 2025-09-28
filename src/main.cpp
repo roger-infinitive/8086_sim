@@ -106,7 +106,7 @@ void print_byte(u8 b, FILE* stream = stdout) {
     fputs(N2B[b&0xF], stream);
 }
 
-#define OPCODE_MOV_REGISTER_TO_REGISTER  0x88
+#define OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER  0x88
 #define OPCODE_MOV_IMMEDIATE_TO_REGISTER 0xB0
 
 #define MODE_MEMORY_NO_DISPLACEMENT     0
@@ -165,7 +165,7 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < file.size;) {
         u8* bytes = &file.buffer[i];
         
-        if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_TO_REGISTER) {
+        if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER) {
 
             u8 word_mask   = 0x01;
             u8 dir_mask    = 0x02;
@@ -174,72 +174,59 @@ int main(int argc, char* argv[]) {
     
             const char** reg_table = (bytes[0] & word_mask) ? register_map_word : register_map_byte; 
             
+            u8 dir  = bytes[0] & dir_mask;
             u8 mode = bytes[1] >> 6;
             u8 reg  = (bytes[1] & reg_mask) >> 3; 
             u8 rm   = bytes[1] & rm_mask;
+            
+            const char* effective_address = effective_address_table[rm];
 
-            switch (mode) {
-                case MODE_MEMORY_NO_DISPLACEMENT: {
-                    const char* effective_address = effective_address_table[rm];
+            if (mode == MODE_REGISTER) {
+                const char* r1 = reg_table[reg];
+                const char* r2 = reg_table[rm];
+                
+                const char* dest   = dir ? r1 : r2;
+                const char* source = dir ? r2 : r1;
+            
+                printf("mov %s, %s\n", dest, source);
+                
+            } else {
+                short displacement = 0;
+                char address_operand[32];
+            
+                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                    not_implemented();
+                
+                } else {
+                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                        u8 sign = bytes[2] & 0x80;
+                        if (sign) {
+                            displacement = 0xFF00;
+                        }
+                        displacement |= bytes[2];
+                        i += 1;
                     
-                    if (rm == 6) {
-                        not_implemented();
-                    } else if (bytes[0] & dir_mask) {
-                        printf("mov %s, [%s]\n", reg_table[reg], effective_address);
-                    } else {
-                        printf("mov [%s], %s\n", effective_address, reg_table[reg]);
-                    }
-                    
-                    i += 2;
-                    continue;
-                    
-                } break;
+                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                        displacement = bytes[2] | (bytes[3] << 8);
+                        i += 2;
+                    }                    
+                }
                 
-                case MODE_MEMORY_8_BIT_DISPLACEMENT: {
-                    const char* effective_address = effective_address_table[rm];
-                    u8 displacement = bytes[2];
-
-                    if (bytes[0] & dir_mask) {
-                        printf("mov %s, [%s + %hhu]\n", reg_table[reg], effective_address, displacement);
-                    } else {
-                        printf("mov [%s + %hhu], %s\n", effective_address, displacement, reg_table[reg]);
-                    }
-
-                    i += 3;
-                    continue;
-                } break;
+                if (displacement == 0) {
+                    sprintf(address_operand, "[%s]", effective_address);
+                } else {
+                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                }
                 
-                case MODE_MEMORY_16_BIT_DISPLACEMENT: {
-                    const char* effective_address = effective_address_table[rm];
-                    u16 displacement = bytes[2] | (bytes[3] << 8);
-
-                    if (bytes[0] & dir_mask) {
-                        printf("mov %s, [%s + %hu]\n", reg_table[reg], effective_address, displacement);
-                    } else {
-                        printf("mov [%s + %hu], %s\n", effective_address, displacement, reg_table[reg]);
-                    }
+                const char* reg_operand = reg_table[reg];
+                const char* dest   = dir ? reg_operand : address_operand;
+                const char* source = dir ? address_operand : reg_operand;
                 
-                    i += 4;
-                    continue;
-                } break;
-                
-                case MODE_REGISTER: {
-                    const char* source;
-                    const char* dest;
-                    
-                    if (bytes[0] & dir_mask) {
-                        source = reg_table[rm];
-                        dest   = reg_table[reg];
-                    } else {
-                        source = reg_table[reg];
-                        dest   = reg_table[rm];
-                    }
-                
-                    printf("mov %s, %s\n", dest, source);
-                    i += 2;
-                    continue;
-                } break;
+                printf("mov %s, %s\n", dest, source);
             }
+            
+            i += 2;
+            continue;
                         
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
             u8 reg  = bytes[0] & 0x07;
