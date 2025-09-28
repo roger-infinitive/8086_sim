@@ -109,6 +109,7 @@ void print_byte(u8 b, FILE* stream = stdout) {
 #define OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER  0x88
 #define OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY         0xC6
 #define OPCODE_MOV_IMMEDIATE_TO_REGISTER                0xB0
+#define OPCODE_MOV_MEMORY_TO_ACCUMULATOR                0xA0
 
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
@@ -190,29 +191,34 @@ int main(int argc, char* argv[]) {
                 printf("mov %s, %s\n", dest, source);
                 
             } else {
-                short displacement = 0;
-                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                    not_implemented();
-                
-                } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                    u8 sign = bytes[2] & 0x80;
-                    if (sign) {
-                        displacement = 0xFF00;
-                    }
-                    displacement |= bytes[2];
-                    i += 1;
-                
-                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                    displacement = bytes[2] | (bytes[3] << 8);
-                    i += 2;
-                }                    
-                
                 char address_operand[32];
-                const char* effective_address = effective_address_table[rm];
-                if (displacement == 0) {
-                    sprintf(address_operand, "[%s]", effective_address);
+                short displacement = 0;
+ 
+                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                    displacement = bytes[2] | (bytes[3] << 8);                    
+                    sprintf(address_operand, "[%hd]", displacement);
+                    i += 2;
+
                 } else {
-                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                        u8 sign = bytes[2] & 0x80;
+                        if (sign) {
+                            displacement = 0xFF00;
+                        }
+                        displacement |= bytes[2];
+                        i += 1;
+                    
+                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                        displacement = bytes[2] | (bytes[3] << 8);
+                        i += 2;
+                    }                    
+                
+                    const char* effective_address = effective_address_table[rm];
+                    if (displacement == 0) {
+                        sprintf(address_operand, "[%s]", effective_address);
+                    } else {
+                        sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                    }
                 }
                 
                 const char* reg_operand = reg_table[reg];
@@ -232,29 +238,34 @@ int main(int argc, char* argv[]) {
             
             int byte_count = 2; 
             
-            short displacement = 0;
-            if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                not_implemented();
-            
-            } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                u8 sign = bytes[byte_count] & 0x80;
-                if (sign) {
-                    displacement = 0xFF00;
-                }
-                displacement |= bytes[byte_count];
-                byte_count += 1;
-            
-            } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                displacement = bytes[byte_count] | (bytes[byte_count + 1] << 8);
-                byte_count += 2;
-            } 
-            
             char address_operand[32];
-            const char* effective_address = effective_address_table[rm];
-            if (displacement == 0) {
-                sprintf(address_operand, "[%s]", effective_address);
+            short displacement = 0;
+            
+            if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                displacement = bytes[2] | (bytes[3] << 8);                    
+                sprintf(address_operand, "[%hd]", displacement);
+                byte_count += 2;
+
             } else {
-                sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                    u8 sign = bytes[2] & 0x80;
+                    if (sign) {
+                        displacement = 0xFF00;
+                    }
+                    displacement |= bytes[2];
+                    byte_count += 1;
+                
+                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                    displacement = bytes[2] | (bytes[3] << 8);
+                    byte_count += 2;
+                }                    
+            
+                const char* effective_address = effective_address_table[rm];
+                if (displacement == 0) {
+                    sprintf(address_operand, "[%s]", effective_address);
+                } else {
+                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                }
             }
             
             u16 data = 0;
@@ -272,6 +283,21 @@ int main(int argc, char* argv[]) {
             i += byte_count;
             continue;
             
+        } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_MEMORY_TO_ACCUMULATOR) {
+            u8 word = bytes[0] & 0x01;
+            u8 dir  = bytes[0] & 0x02;
+
+            u16 address = bytes[1] | bytes[2] << 8;
+
+            if (dir) {
+                printf("mov [%hd], %s\n", address, word ? "ax" : "al");
+            } else {
+                printf("mov %s, [%hd]\n", word ? "ax" : "al", address);
+            }
+            
+            i += 3;
+            continue;
+      
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
             u8 reg  = bytes[0] & 0x07;
             u8 word = bytes[0] & 0x08;
