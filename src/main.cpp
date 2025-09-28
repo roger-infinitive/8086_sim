@@ -107,7 +107,8 @@ void print_byte(u8 b, FILE* stream = stdout) {
 }
 
 #define OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER  0x88
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER 0xB0
+#define OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY         0xC6
+#define OPCODE_MOV_IMMEDIATE_TO_REGISTER                0xB0
 
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
@@ -179,8 +180,6 @@ int main(int argc, char* argv[]) {
             u8 reg  = (bytes[1] & reg_mask) >> 3; 
             u8 rm   = bytes[1] & rm_mask;
             
-            const char* effective_address = effective_address_table[rm];
-
             if (mode == MODE_REGISTER) {
                 const char* r1 = reg_table[reg];
                 const char* r2 = reg_table[rm];
@@ -192,26 +191,24 @@ int main(int argc, char* argv[]) {
                 
             } else {
                 short displacement = 0;
-                char address_operand[32];
-            
                 if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
                     not_implemented();
                 
-                } else {
-                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                        u8 sign = bytes[2] & 0x80;
-                        if (sign) {
-                            displacement = 0xFF00;
-                        }
-                        displacement |= bytes[2];
-                        i += 1;
-                    
-                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                        displacement = bytes[2] | (bytes[3] << 8);
-                        i += 2;
-                    }                    
-                }
+                } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                    u8 sign = bytes[2] & 0x80;
+                    if (sign) {
+                        displacement = 0xFF00;
+                    }
+                    displacement |= bytes[2];
+                    i += 1;
                 
+                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                    displacement = bytes[2] | (bytes[3] << 8);
+                    i += 2;
+                }                    
+                
+                char address_operand[32];
+                const char* effective_address = effective_address_table[rm];
                 if (displacement == 0) {
                     sprintf(address_operand, "[%s]", effective_address);
                 } else {
@@ -227,7 +224,54 @@ int main(int argc, char* argv[]) {
             
             i += 2;
             continue;
-                        
+        
+        } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
+            u8 word = bytes[0] & 0x01;
+            u8 mode = bytes[1] >> 6;
+            u8 rm   = bytes[1] & 0x07;
+            
+            int byte_index = 2; 
+            
+            short displacement = 0;
+            if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                not_implemented();
+            
+            } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                u8 sign = bytes[byte_index] & 0x80;
+                if (sign) {
+                    displacement = 0xFF00;
+                }
+                displacement |= bytes[byte_index];
+                byte_index += 1;
+            
+            } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                displacement = bytes[byte_index] | (bytes[byte_index + 1] << 8);
+                byte_index += 2;
+            } 
+            
+            char address_operand[32];
+            const char* effective_address = effective_address_table[rm];
+            if (displacement == 0) {
+                sprintf(address_operand, "[%s]", effective_address);
+            } else {
+                sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+            }
+            
+            u16 data = 0;
+            if (word) {
+                data = bytes[byte_index] | (bytes[byte_index + 1] << 8);
+                byte_index++; 
+            } else {
+                data = bytes[byte_index];
+            }
+            
+            const char* size_label = word ? "word" : "byte";
+                
+            printf("mov %s, %s %hu\n", address_operand, size_label, data);
+            
+            i += byte_index + 1;
+            continue;
+            
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
             u8 reg  = bytes[0] & 0x07;
             u8 word = bytes[0] & 0x08;
