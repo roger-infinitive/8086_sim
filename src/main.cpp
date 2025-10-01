@@ -149,6 +149,13 @@ const char* effective_address_table[8] = {
     "bx"
 };
 
+enum OpClass {
+    OP_CLASS_NONE                         = 0,
+    OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 1,
+    OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 2,
+    OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
+};
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
@@ -167,7 +174,49 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < file.size;) {
         u8* bytes = &file.buffer[i];
         
+        OpClass op_class = OP_CLASS_NONE;
+        u8 opcode_byte = 0;
+        
+        bool use_signed_immediate = false;
+        
         if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER) {
+            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            opcode_byte = OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER;
+        
+        } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            opcode_byte = OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY;
+        
+        } else if ((bytes[0] & 0b11000100) == 0) {
+            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            opcode_byte = bytes[0] & 0b00111000;
+        
+        } else if ((bytes[0] & 0xFC) == 0x80) {
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            opcode_byte = bytes[1] & 0b00111000;
+            use_signed_immediate = (bytes[0] & 0b00000010) != 0; 
+                    
+        } else if ((bytes[0] & 0b11000110) == 0b00000100) {
+            op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
+            opcode_byte = bytes[0] & 0b00111000;
+            
+        }
+        
+        char* op_text = 0;
+        switch (opcode_byte) {
+            case OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY:
+            case OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER: 
+                op_text = "mov"; 
+            break;
+            
+            case 0x00: op_text = "add"; break;
+            case 0x28: op_text = "sub"; break;
+            case 0x38: op_text = "cmp"; break;
+            
+            default: not_implemented(); 
+        }
+        
+        if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
 
             u8 word = bytes[0] & 0x01;
             u8 dir  = bytes[0] & 0x02;
@@ -186,7 +235,7 @@ int main(int argc, char* argv[]) {
                 const char* dest   = dir ? r1 : r2;
                 const char* source = dir ? r2 : r1;
             
-                printf("mov %s, %s\n", dest, source);
+                printf("%s %s, %s\n", op_text, dest, source);
                 
             } else {
                 char address_operand[32];
@@ -223,13 +272,13 @@ int main(int argc, char* argv[]) {
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
-                printf("mov %s, %s\n", dest, source);
+                printf("%s %s, %s\n", op_text, dest, source);
             }
             
             i += byte_count;
             continue;
         
-        } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
+        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY) {
             u8 word = bytes[0] & 0x01;
             u8 mode = bytes[1] >> 6;
             u8 rm   = bytes[1] & 0x07;
@@ -239,11 +288,15 @@ int main(int argc, char* argv[]) {
             char address_operand[32];
             short displacement = 0;
             
-            if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+            if (mode == MODE_REGISTER) {
+                const char** reg_table = word ? register_map_word : register_map_byte; 
+                strcpy(address_operand, reg_table[rm]);
+                
+            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
                 displacement = bytes[2] | (bytes[3] << 8);                    
                 sprintf(address_operand, "[%hd]", displacement);
                 byte_count += 2;
-
+    
             } else {
                 if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
                     u8 sign = bytes[2] & 0x80;
@@ -268,15 +321,25 @@ int main(int argc, char* argv[]) {
             
             u16 data = 0;
             if (word) {
-                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
-                byte_count += 2; 
+                // TODO(roger): do we need use_signed_immediate? perhaps we can parse 's' for mov as well?
+                if (use_signed_immediate) {
+                    u8 sign = bytes[byte_count] & 0x80;
+                    if (sign) {
+                        data = 0xFF00;
+                    }
+                    data |= bytes[byte_count];
+                    byte_count += 1; 
+                } else {
+                    data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
+                    byte_count += 2; 
+                }
             } else {
                 data = bytes[byte_count];
                 byte_count += 1;
             }
             
             const char* size_label = word ? "word" : "byte";
-            printf("mov %s, %s %hu\n", address_operand, size_label, data);
+            printf("%s %s, %s %hu\n", op_text, address_operand, size_label, data);
 
             i += byte_count;
             continue;
@@ -315,6 +378,27 @@ int main(int argc, char* argv[]) {
             
             const char* size_label = word ? "word" : "byte";
             printf("%s %hu\n", size_label, data);
+        
+            i += byte_count;    
+            continue;
+            
+        } else if (op_class == OP_CLASS_IMMEDIATE_TO_ACCUMULATOR) {
+            u8 word = bytes[0] & 0x01;
+            int byte_count = 1;
+
+            u16 data = 0;
+            if (word) {
+                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
+                byte_count += 2;
+            } else {
+                data = bytes[byte_count];
+                byte_count += 1;
+            }
+            
+            const char* size_label = word ? "word" : "byte";
+            const char* reg = word ? "ax" : "al";
+            
+            printf("%s %s, %s %hu\n", op_text, reg, size_label, data);
         
             i += byte_count;    
             continue;
