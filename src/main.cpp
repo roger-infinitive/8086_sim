@@ -156,6 +156,49 @@ enum OpClass {
     OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
 };
 
+struct Instruction {
+    int address;
+    char* string;
+    
+    bool is_jump;
+    int jump_address;
+};
+
+char instruction_buffer[64];
+int instruction_count;
+Instruction instructions[4096];
+
+Instruction* capture_instruction(int address, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsprintf(instruction_buffer, fmt, ap);
+    va_end(ap);
+
+    char* captured = (char*)&main_arena.buffer[main_arena.index];
+
+    const char* current = instruction_buffer; 
+    while (current[0] != 0) {
+        main_arena.buffer[main_arena.index++] = current[0];
+        current += 1;
+    }
+    main_arena.buffer[main_arena.index++] = '\0';
+
+    Instruction* instruction = &instructions[instruction_count];
+    instruction_count += 1;
+
+    instruction->address = address;
+    instruction->string = captured;
+
+    return instruction;
+}
+
+Instruction* capture_jump_instruction(int address, int jump_address, const char* mnemonic) {
+    Instruction* instruction = capture_instruction(address, mnemonic);
+    instruction->is_jump = true;
+    instruction->jump_address = jump_address;
+    return instruction;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Usage: %s <filename>\n", argv[0]);
@@ -168,15 +211,13 @@ int main(int argc, char* argv[]) {
     if (!read_entire_file(&file, argv[1], main_arena_alloc)) {
         return 1;
     }
-
-    printf("bits 16\n");
-
+    
     for (int i = 0; i < file.size;) {
+        int address = i;
         u8* bytes = &file.buffer[i];
         
         OpClass op_class = OP_CLASS_NONE;
         u8 opcode_byte = 0;
-        
         bool use_signed_immediate = false;
         
         if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER) {
@@ -191,7 +232,7 @@ int main(int argc, char* argv[]) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
             opcode_byte = bytes[0] & 0b00111000;
         
-        } else if ((bytes[0] & 0xFC) == 0x80) {
+        } else if ((bytes[0] & 0b11111100) == 0b10000000) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
             opcode_byte = bytes[1] & 0b00111000;
             use_signed_immediate = (bytes[0] & 0b00000010) != 0; 
@@ -235,7 +276,7 @@ int main(int argc, char* argv[]) {
                 const char* dest   = dir ? r1 : r2;
                 const char* source = dir ? r2 : r1;
             
-                printf("%s %s, %s\n", op_text, dest, source);
+                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
                 
             } else {
                 char address_operand[32];
@@ -272,7 +313,7 @@ int main(int argc, char* argv[]) {
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
-                printf("%s %s, %s\n", op_text, dest, source);
+                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
             }
             
             i += byte_count;
@@ -339,7 +380,7 @@ int main(int argc, char* argv[]) {
             }
             
             const char* size_label = word ? "word" : "byte";
-            printf("%s %s, %s %hu\n", op_text, address_operand, size_label, data);
+            capture_instruction(address, "%s %s, %s %hu\n", op_text, address_operand, size_label, data);
 
             i += byte_count;
             continue;
@@ -351,9 +392,9 @@ int main(int argc, char* argv[]) {
             u16 address = bytes[1] | bytes[2] << 8;
 
             if (dir) {
-                printf("mov [%hd], %s\n", address, word ? "ax" : "al");
+                capture_instruction(address, "mov [%hd], %s\n", address, word ? "ax" : "al");
             } else {
-                printf("mov %s, [%hd]\n", word ? "ax" : "al", address);
+                capture_instruction(address, "mov %s, [%hd]\n", word ? "ax" : "al", address);
             }
             
             i += 3;
@@ -365,7 +406,6 @@ int main(int argc, char* argv[]) {
             int byte_count = 1;
 
             const char** reg_table = word ? register_map_word : register_map_byte; 
-            printf("mov %s, ", reg_table[reg]);
             
             u16 data = 0;
             if (word) {
@@ -377,7 +417,7 @@ int main(int argc, char* argv[]) {
             }
             
             const char* size_label = word ? "word" : "byte";
-            printf("%s %hu\n", size_label, data);
+            capture_instruction(address, "mov %s, %s %hu\n", reg_table[reg], size_label, data);
         
             i += byte_count;    
             continue;
@@ -398,16 +438,163 @@ int main(int argc, char* argv[]) {
             const char* size_label = word ? "word" : "byte";
             const char* reg = word ? "ax" : "al";
             
-            printf("%s %s, %s %hu\n", op_text, reg, size_label, data);
+            capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
         
             i += byte_count;    
             continue;
+        
+        } else if (bytes[0] == 0x70) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jo");
+            continue;
+        
+        } else if (bytes[0] == 0x71) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jno");
+            continue;
+            
+        } else if (bytes[0] == 0x72) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jb");
+            continue;
+            
+        } else if (bytes[0] == 0x73) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jnb");
+            continue;
+                                
+        } else if (bytes[0] == 0x74) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "je");
+            continue;
+        
+        } else if (bytes[0] == 0x75) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jne");
+            continue;
+        
+        } else if (bytes[0] == 0x76) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jbe");
+            continue;
+        
+        } else if (bytes[0] == 0x77) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jnbe");
+            continue;
+            
+        } else if (bytes[0] == 0x78) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "js");
+            continue;        
+        
+        } else if (bytes[0] == 0x79) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jns");
+            continue;        
+            
+        } else if (bytes[0] == 0x7A) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jp");
+            continue;
+            
+        } else if (bytes[0] == 0x7B) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jnp");
+            continue;
+
+        } else if (bytes[0] == 0x7C) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jl");
+            continue;
+            
+        } else if (bytes[0] == 0x7D) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jnl");
+            continue;
+            
+        } else if (bytes[0] == 0x7E) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jle");
+            continue;            
+        
+        } else if (bytes[0] == 0x7F) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jnle");
+            continue;            
+        
+        } else if (bytes[0] == 0xE0) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "loopnz");
+            continue;
+            
+        } else if (bytes[0] == 0xE1) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "loopz");
+            continue;
+            
+        } else if (bytes[0] == 0xE2) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "loop");
+            continue;
+             
+        } else if (bytes[0] == 0xE3) {
+            i += 2;
+            capture_jump_instruction(address, i + (char)bytes[1], "jcxz");
+            continue;
+             
         }
         
         fputs("Unable to decode byte: ", stderr);
         print_byte(bytes[0], stderr);
         fputc('\n', stderr);
         ERROR_ABORT();
+    }
+    
+    // Labels
+    int label_counter = 0;
+    int label_addresses[1024];
+    memset(label_addresses, 0, 1024 * sizeof(int)); 
+    
+    for (int i = 0; i < instruction_count; i++) {
+        if (!instructions[i].is_jump) {
+            continue;
+        }
+    
+        instructions[i].jump_address;
+
+        bool found = false;
+        for (int j = 0; j < label_counter; j++) {
+            if (label_addresses[j] == instructions[i].jump_address) {
+                found = true;
+                break;
+            } 
+        }
+        
+        if (found) {
+            continue;
+        }
+
+        label_addresses[label_counter] = instructions[i].jump_address;
+        label_counter++;
+    }
+    
+    printf("bits 16\n");
+    for (int i = 0; i < instruction_count; i++) {
+    
+        // TODO(roger): if we sort the label_addresses, then we can eliminate this loop and use a current index to check
+        // if we need to instead the next label into the output or not.
+        for (int j = 0; j < label_counter; j++) {
+            if (label_addresses[j] == instructions[i].address) {
+                printf("label_%d:\n", label_addresses[j]);
+                break;
+            }
+        }
+    
+        printf(instructions[i].string);
+        if (instructions[i].is_jump) {
+            printf(" label_%d\n", instructions[i].jump_address);
+        }
     }
 
     return 0;
