@@ -154,6 +154,7 @@ enum OpClass {
     OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 1,
     OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 2,
     OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
+    OP_CLASS_REGISTER_MEMORY              = 4,
 };
 
 struct Instruction {
@@ -230,7 +231,7 @@ int main(int argc, char* argv[]) {
         
         } else if ((bytes[0] & 0b11000100) == 0) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
-            opcode_byte = bytes[0] & 0b00111000;
+            opcode_byte = (bytes[0] >> 3) & 0x07;
         
         } else if ((bytes[0] & 0b11111100) == 0b10000000) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
@@ -243,22 +244,126 @@ int main(int argc, char* argv[]) {
             
         }
         
-        // nocheckin: this is now confusing as we add more types of instructions that use different tables.
-        char* op_text = 0;
-        switch (opcode_byte) {
-            case OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY:
-            case OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER: 
-                op_text = "mov"; 
-            break;
+        const char* op_text = 0;
+        
+        const char* group_one_mnemonics[] = {
+            "add", 
+            "or",
+            "adc",
+            "sbb",
+            "and",
+            "sub",
+            "xor",
+            "cmp"
+        };
+        
+        if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
+            if ((bytes[0] & 0x06) == 0x06) {
+                if ((bytes[0] & 0xF0) == 0x20) {
+                    NOT_IMPLEMENTED();
+                }
             
-            case 0x00: op_text = "add"; break;
-            case 0x28: op_text = "sub"; break;
-            case 0x38: op_text = "cmp"; break;
+                if (bytes[0] & 0x01) {
+                    op_text = "pop";
+                } else {
+                    op_text = "push";
+                }
+                
+                const char* target = 0;
+                switch (bytes[0] & 0x18) {
+                    case 0: target = "es"; break;
+                    case 1: target = "cs"; break;
+                    case 2: target = "ss"; break;
+                    case 3: target = "ds"; break;
+                }
+                
+                capture_instruction(address, "%s %s\n", op_text, target);
+                i += 1;
+                continue;
+                
+            } else { 
+                op_text = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
+
+                if (bytes[0] & 0x04) {
+                    op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
+                } else {
+                    op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+                } 
+            }
+        
+        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x83) {
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
+        
+        } else if (bytes[0] & 0x8F) {
+            op_class = OP_CLASS_REGISTER_MEMORY;
+            op_text = "pop";
             
-            default: not_implemented(); 
+        } else {
+            // nocheckin: this is now confusing as we add more types of instructions that use different tables.
+            switch (opcode_byte) {
+                case OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY:
+                case OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER: 
+                    op_text = "mov"; 
+                break;
+                
+                case 0x00: op_text = "add"; break;
+                case 0x28: op_text = "sub"; break;
+                case 0x38: op_text = "cmp"; break;
+                
+                default: print_byte(bytes[0]); not_implemented(); 
+            }
         }
         
-        if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
+        if (op_class == OP_CLASS_REGISTER_MEMORY) {
+            u8 word = bytes[0] & 0x01;
+            u8 mode = bytes[1] >> 6;
+            u8 rm   = bytes[1] & 0x07;
+            
+            int byte_count = 2;
+            
+            // nocheckin: duplicate.
+            char address_operand[32];
+            short displacement = 0;
+            
+            if (mode == MODE_REGISTER) {
+                const char** reg_table = word ? register_map_word : register_map_byte; 
+                strcpy(address_operand, reg_table[rm]);
+                
+            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                displacement = bytes[2] | (bytes[3] << 8);                    
+                sprintf(address_operand, "[%hd]", displacement);
+                byte_count += 2;
+    
+            } else {
+                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                    u8 sign = bytes[2] & 0x80;
+                    if (sign) {
+                        displacement = 0xFF00;
+                    }
+                    displacement |= bytes[2];
+                    byte_count += 1;
+                
+                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                    displacement = bytes[2] | (bytes[3] << 8);
+                    byte_count += 2;
+                }                    
+            
+                const char* effective_address = effective_address_table[rm];
+                if (displacement == 0) {
+                    sprintf(address_operand, "[%s]", effective_address);
+                } else {
+                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                }
+            }
+            
+            const char* size_label = word ? "word" : "byte";
+            capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
+            
+            i += byte_count;
+            continue;
+            
+        } else if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
 
             u8 word = bytes[0] & 0x01;
             u8 dir  = bytes[0] & 0x02;
@@ -518,6 +623,10 @@ int main(int argc, char* argv[]) {
             const char* mnemonic = mnemonics[(bytes[0] & 0x18) >> 3];
             capture_instruction(address, "%s %s\n", mnemonic, reg);
             
+            i += 1;
+            continue;
+        } else if (bytes[0] == 0x0E) {
+            capture_instruction(address, "push cs\n");
             i += 1;
             continue;
         
