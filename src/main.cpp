@@ -243,6 +243,7 @@ int main(int argc, char* argv[]) {
             
         }
         
+        // nocheckin: this is now confusing as we add more types of instructions that use different tables.
         char* op_text = 0;
         switch (opcode_byte) {
             case OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY:
@@ -441,6 +442,83 @@ int main(int argc, char* argv[]) {
             capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
         
             i += byte_count;    
+            continue;
+        
+        } else if ((bytes[0] >> 1) == 0x7F) {
+        
+            u8 word = bytes[0] & 0x01;
+            u8 mnemonic = (bytes[1] >> 3) & 0x07;
+            u8 mode = (bytes[1] >> 6);
+            u8 rm = bytes[1] & 0x07; 
+            
+            int byte_count = 2;
+            
+            // nocheckin: duplicated from OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY
+            
+            char address_operand[32];
+            short displacement = 0;
+            
+            if (mode == MODE_REGISTER) {
+                const char** reg_table = word ? register_map_word : register_map_byte; 
+                strcpy(address_operand, reg_table[rm]);
+                
+            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                displacement = bytes[2] | (bytes[3] << 8);                    
+                sprintf(address_operand, "[%hd]", displacement);
+                byte_count += 2;
+    
+            } else {
+                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                    u8 sign = bytes[2] & 0x80;
+                    if (sign) {
+                        displacement = 0xFF00;
+                    }
+                    displacement |= bytes[2];
+                    byte_count += 1;
+                
+                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                    displacement = bytes[2] | (bytes[3] << 8);
+                    byte_count += 2;
+                }                    
+            
+                const char* effective_address = effective_address_table[rm];
+                if (displacement == 0) {
+                    sprintf(address_operand, "[%s]", effective_address);
+                } else {
+                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                }
+            }
+            
+            const char* mnemonics[] = {
+                "inc",
+                "dec",
+                "call",
+                "call",
+                "jmp",
+                "jmp",
+                "push"
+            };
+            
+            const char* size_label = word ? "word" : "byte";
+            capture_instruction(address, "%s %s %s\n", mnemonics[mnemonic], size_label, address_operand);
+            
+            i += byte_count;
+            continue;
+            
+        } else if ((bytes[0] & 0xE0) == 0x40) {
+            const char* reg = register_map_word[bytes[0] & 0x0F];
+            
+            const char* mnemonics[] = {
+                "inc",
+                "dec",
+                "push",
+                "pop",
+            };
+            
+            const char* mnemonic = mnemonics[(bytes[0] & 0x18) >> 3];
+            capture_instruction(address, "%s %s\n", mnemonic, reg);
+            
+            i += 1;
             continue;
         
         } else if (bytes[0] == 0x70) {
