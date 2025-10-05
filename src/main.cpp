@@ -312,9 +312,23 @@ int main(int argc, char* argv[]) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
             op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
         
-        } else if (bytes[0] & 0x8F) {
+        } else if (bytes[0] == 0x8F) {
             op_class = OP_CLASS_REGISTER_MEMORY;
             op_text = "pop";
+            
+        } else if ((bytes[0] >> 1) == 0x7F) {            
+            const char* mnemonics[] = {
+                "inc",
+                "dec",
+                "call",
+                "call",
+                "jmp",
+                "jmp",
+                "push"
+            };
+            
+            op_class = OP_CLASS_REGISTER_MEMORY;
+            op_text = mnemonics[(bytes[1] >> 3) & 0x07];
             
         } else {
             // nocheckin: this is now confusing as we add more types of instructions that use different tables.
@@ -332,47 +346,71 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        if (op_class == OP_CLASS_REGISTER_MEMORY) {
-            u8 word = bytes[0] & 0x01;
-            u8 mode = bytes[1] >> 6;
-            u8 rm   = bytes[1] & 0x07;
-            
-            int byte_count = 2;
-            
-            // nocheckin: duplicate.
-            char address_operand[32];
-            short displacement = 0;
-            
-            if (mode == MODE_REGISTER) {
-                const char** reg_table = word ? register_map_word : register_map_byte; 
-                strcpy(address_operand, reg_table[rm]);
+        int byte_count = 0;
+        
+        u8 word = bytes[0] & 0x01;
+        u8 mode = bytes[1] >> 6;
+        u8 rm   = bytes[1] & 0x07;
+
+        char address_operand[32];
+        
+        switch (op_class) {
+            case OP_CLASS_REGISTER_MEMORY:
+            case OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY:
+            case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
+                if (mode == MODE_REGISTER) {
+                    const char** reg_table = word ? register_map_word : register_map_byte; 
+                    strcpy(address_operand, reg_table[rm]);
                 
-            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                displacement = bytes[2] | (bytes[3] << 8);                    
-                sprintf(address_operand, "[%hd]", displacement);
-                byte_count += 2;
-    
-            } else {
-                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                    u8 sign = bytes[2] & 0x80;
-                    if (sign) {
-                        displacement = 0xFF00;
-                    }
-                    displacement |= bytes[2];
-                    byte_count += 1;
-                
-                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                    displacement = bytes[2] | (bytes[3] << 8);
-                    byte_count += 2;
-                }                    
-            
-                const char* effective_address = effective_address_table[rm];
-                if (displacement == 0) {
-                    sprintf(address_operand, "[%s]", effective_address);
                 } else {
-                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                    short displacement = 0;
+     
+                    if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                        displacement = bytes[2] | (bytes[3] << 8);
+    
+                        if (use_segment_override) {
+                            sprintf(address_operand, "[%s:%hd]", segments[segment_override], displacement);
+                        } else {
+                            sprintf(address_operand, "[%hd]", displacement);
+                        }
+                        
+                        byte_count += 2;
+    
+                    } else {
+                        if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                            u8 sign = bytes[2] & 0x80;
+                            if (sign) {
+                                displacement = 0xFF00;
+                            }
+                            displacement |= bytes[2];
+                            byte_count += 1;
+                        
+                        } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                            displacement = bytes[2] | (bytes[3] << 8);
+                            byte_count += 2;
+                        }                    
+                    
+                        const char* effective_address = effective_address_table[rm];
+                    
+                        char address_buffer[32];
+                        if (use_segment_override) {
+                            sprintf(address_buffer, "%s:%s", segments[segment_override], effective_address);
+                        } else {
+                            strcpy(address_buffer, effective_address);
+                        }
+                    
+                        if (displacement == 0) {
+                            sprintf(address_operand, "[%s]", address_buffer);
+                        } else {
+                            sprintf(address_operand, "[%s + %hd]", address_buffer, displacement);
+                        }
+                    }
                 }
-            }
+            } break;
+        }
+        
+        if (op_class == OP_CLASS_REGISTER_MEMORY) {            
+            byte_count += 2;
             
             const char* size_label = word ? "word" : "byte";
             capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
@@ -382,75 +420,15 @@ int main(int argc, char* argv[]) {
             
         } else if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
 
-            u8 word = bytes[0] & 0x01;
             u8 dir  = bytes[0] & 0x02;
-            u8 mode = bytes[1] >> 6;
             u8 reg  = (bytes[1] & 0x38) >> 3; 
-            u8 rm   = bytes[1] & 0x07;
             
-            int byte_count = 2;
-    
+            byte_count += 2;
+            
             const char** reg_table = word ? register_map_word : register_map_byte; 
-            
-            const char* dest   = 0;
-            const char* source = 0;
-            
-            if (mode == MODE_REGISTER) {
-                const char* r1 = reg_table[reg];
-                const char* r2 = reg_table[rm];
-                
-                dest   = dir ? r1 : r2;
-                source = dir ? r2 : r1;
-            
-            } else {
-                char address_operand[32];
-                short displacement = 0;
- 
-                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                    displacement = bytes[2] | (bytes[3] << 8);
-
-                    if (use_segment_override) {
-                        sprintf(address_operand, "[%s:%hd]", segments[segment_override], displacement);
-                    } else {
-                        sprintf(address_operand, "[%hd]", displacement);
-                    }
-                    
-                    byte_count += 2;
-
-                } else {
-                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                        u8 sign = bytes[2] & 0x80;
-                        if (sign) {
-                            displacement = 0xFF00;
-                        }
-                        displacement |= bytes[2];
-                        byte_count += 1;
-                    
-                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                        displacement = bytes[2] | (bytes[3] << 8);
-                        byte_count += 2;
-                    }                    
-                
-                    const char* effective_address = effective_address_table[rm];
-                
-                    char address_buffer[32];
-                    if (use_segment_override) {
-                        sprintf(address_buffer, "%s:%s", segments[segment_override], effective_address);
-                    } else {
-                        strcpy(address_buffer, effective_address);
-                    }
-                
-                    if (displacement == 0) {
-                        sprintf(address_operand, "[%s]", address_buffer);
-                    } else {
-                        sprintf(address_operand, "[%s + %hd]", address_buffer, displacement);
-                    }
-                }
-                
-                const char* reg_operand = reg_table[reg];
-                dest   = dir ? reg_operand : address_operand;
-                source = dir ? address_operand : reg_operand;
-            }
+            const char* reg_operand = reg_table[reg];
+            const char* dest   = dir ? reg_operand : address_operand;
+            const char* source = dir ? address_operand : reg_operand;
             
             capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
 
@@ -458,45 +436,7 @@ int main(int argc, char* argv[]) {
             continue;
         
         } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY) {
-            u8 word = bytes[0] & 0x01;
-            u8 mode = bytes[1] >> 6;
-            u8 rm   = bytes[1] & 0x07;
-            
-            int byte_count = 2; 
-            
-            char address_operand[32];
-            short displacement = 0;
-            
-            if (mode == MODE_REGISTER) {
-                const char** reg_table = word ? register_map_word : register_map_byte; 
-                strcpy(address_operand, reg_table[rm]);
-                
-            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                displacement = bytes[2] | (bytes[3] << 8);                    
-                sprintf(address_operand, "[%hd]", displacement);
-                byte_count += 2;
-    
-            } else {
-                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                    u8 sign = bytes[2] & 0x80;
-                    if (sign) {
-                        displacement = 0xFF00;
-                    }
-                    displacement |= bytes[2];
-                    byte_count += 1;
-                
-                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                    displacement = bytes[2] | (bytes[3] << 8);
-                    byte_count += 2;
-                }                    
-            
-                const char* effective_address = effective_address_table[rm];
-                if (displacement == 0) {
-                    sprintf(address_operand, "[%s]", effective_address);
-                } else {
-                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
-                }
-            }
+            byte_count += 2; 
             
             u16 data = 0;
             if (word) {
@@ -524,7 +464,6 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_MEMORY_TO_ACCUMULATOR) {
-            u8 word = bytes[0] & 0x01;
             u8 dir  = bytes[0] & 0x02;
 
             u16 address = bytes[1] | bytes[2] << 8;
@@ -540,8 +479,8 @@ int main(int argc, char* argv[]) {
       
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
             u8 reg  = bytes[0] & 0x07;
-            u8 word = bytes[0] & 0x08;
-            int byte_count = 1;
+            word = bytes[0] & 0x08;
+            byte_count += 1;
 
             const char** reg_table = word ? register_map_word : register_map_byte; 
             
@@ -561,8 +500,7 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if (op_class == OP_CLASS_IMMEDIATE_TO_ACCUMULATOR) {
-            u8 word = bytes[0] & 0x01;
-            int byte_count = 1;
+            byte_count += 1;
 
             u16 data = 0;
             if (word) {
@@ -581,67 +519,6 @@ int main(int argc, char* argv[]) {
             i += byte_count;    
             continue;
         
-        } else if ((bytes[0] >> 1) == 0x7F) {
-        
-            u8 word = bytes[0] & 0x01;
-            u8 mnemonic = (bytes[1] >> 3) & 0x07;
-            u8 mode = (bytes[1] >> 6);
-            u8 rm = bytes[1] & 0x07; 
-            
-            int byte_count = 2;
-            
-            // nocheckin: duplicated from OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY
-            
-            char address_operand[32];
-            short displacement = 0;
-            
-            if (mode == MODE_REGISTER) {
-                const char** reg_table = word ? register_map_word : register_map_byte; 
-                strcpy(address_operand, reg_table[rm]);
-                
-            } else if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                displacement = bytes[2] | (bytes[3] << 8);                    
-                sprintf(address_operand, "[%hd]", displacement);
-                byte_count += 2;
-    
-            } else {
-                if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                    u8 sign = bytes[2] & 0x80;
-                    if (sign) {
-                        displacement = 0xFF00;
-                    }
-                    displacement |= bytes[2];
-                    byte_count += 1;
-                
-                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                    displacement = bytes[2] | (bytes[3] << 8);
-                    byte_count += 2;
-                }                    
-            
-                const char* effective_address = effective_address_table[rm];
-                if (displacement == 0) {
-                    sprintf(address_operand, "[%s]", effective_address);
-                } else {
-                    sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
-                }
-            }
-            
-            const char* mnemonics[] = {
-                "inc",
-                "dec",
-                "call",
-                "call",
-                "jmp",
-                "jmp",
-                "push"
-            };
-            
-            const char* size_label = word ? "word" : "byte";
-            capture_instruction(address, "%s %s %s\n", mnemonics[mnemonic], size_label, address_operand);
-            
-            i += byte_count;
-            continue;
-            
         } else if ((bytes[0] & 0xE0) == 0x40) {
             const char* reg = register_map_word[bytes[0] & 0x0F];
             
