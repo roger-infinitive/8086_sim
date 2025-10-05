@@ -257,7 +257,7 @@ int main(int argc, char* argv[]) {
         
         const char* op_text = 0;
         
-        const char* segment_overrides[] = {
+        const char* segments[] = {
             "es",
             "cs",
             "ss",
@@ -280,15 +280,7 @@ int main(int argc, char* argv[]) {
                 if ((bytes[0] & 0xF0) <= 0x10) {
                     op_text = (bytes[0] & 0x01) ? "pop" : "push";
                     
-                    const char* target = 0;
-                    switch ((bytes[0] >> 3) & 0x03) {
-                        case 0: target = "es"; break;
-                        case 1: target = "cs"; break;
-                        case 2: target = "ss"; break;
-                        case 3: target = "ds"; break;
-                    }
-                    
-                    capture_instruction(address, "%s %s\n", op_text, target);
+                    capture_instruction(address, "%s %s\n", op_text, segments[(bytes[0] >> 3) & 0x03]);
                     i += 1;
                     continue;
                     
@@ -400,22 +392,29 @@ int main(int argc, char* argv[]) {
     
             const char** reg_table = word ? register_map_word : register_map_byte; 
             
+            const char* dest   = 0;
+            const char* source = 0;
+            
             if (mode == MODE_REGISTER) {
                 const char* r1 = reg_table[reg];
                 const char* r2 = reg_table[rm];
                 
-                const char* dest   = dir ? r1 : r2;
-                const char* source = dir ? r2 : r1;
+                dest   = dir ? r1 : r2;
+                source = dir ? r2 : r1;
             
-                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
-                
             } else {
                 char address_operand[32];
                 short displacement = 0;
  
                 if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                    displacement = bytes[2] | (bytes[3] << 8);                    
-                    sprintf(address_operand, "[%hd]", displacement);
+                    displacement = bytes[2] | (bytes[3] << 8);
+
+                    if (use_segment_override) {
+                        sprintf(address_operand, "[%s:%hd]", segments[segment_override], displacement);
+                    } else {
+                        sprintf(address_operand, "[%hd]", displacement);
+                    }
+                    
                     byte_count += 2;
 
                 } else {
@@ -433,24 +432,28 @@ int main(int argc, char* argv[]) {
                     }                    
                 
                     const char* effective_address = effective_address_table[rm];
-                    if (displacement == 0) {
-                        if (use_segment_override) {
-                            sprintf(address_operand, "[%s:%s]", segment_overrides[segment_override], effective_address);
-                        } else {
-                            sprintf(address_operand, "[%s]", effective_address);
-                        }
+                
+                    char address_buffer[32];
+                    if (use_segment_override) {
+                        sprintf(address_buffer, "%s:%s", segments[segment_override], effective_address);
                     } else {
-                        sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
+                        strcpy(address_buffer, effective_address);
+                    }
+                
+                    if (displacement == 0) {
+                        sprintf(address_operand, "[%s]", address_buffer);
+                    } else {
+                        sprintf(address_operand, "[%s + %hd]", address_buffer, displacement);
                     }
                 }
                 
                 const char* reg_operand = reg_table[reg];
-                const char* dest   = dir ? reg_operand : address_operand;
-                const char* source = dir ? address_operand : reg_operand;
-                
-                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+                dest   = dir ? reg_operand : address_operand;
+                source = dir ? address_operand : reg_operand;
             }
             
+            capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+
             i += byte_count;
             continue;
         
