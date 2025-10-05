@@ -217,6 +217,21 @@ int main(int argc, char* argv[]) {
         int address = i;
         u8* bytes = &file.buffer[i];
         
+        bool use_segment_override = false;
+        u8 segment_override = 0;
+        
+        switch (bytes[0]) {
+            case 0x26:
+            case 0x2E:
+            case 0x36:
+            case 0x3E: {
+                use_segment_override = true;
+                segment_override = bytes[0] >> 3 & 0x03;
+                i += 1;
+                bytes = &file.buffer[i];
+            } break;
+        }
+        
         OpClass op_class = OP_CLASS_NONE;
         u8 opcode_byte = 0;
         bool use_signed_immediate = false;
@@ -228,10 +243,6 @@ int main(int argc, char* argv[]) {
         } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
             opcode_byte = OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY;
-        
-        } else if ((bytes[0] & 0b11000100) == 0) {
-            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
-            opcode_byte = (bytes[0] >> 3) & 0x07;
         
         } else if ((bytes[0] & 0b11111100) == 0b10000000) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
@@ -246,6 +257,13 @@ int main(int argc, char* argv[]) {
         
         const char* op_text = 0;
         
+        const char* segment_overrides[] = {
+            "es",
+            "cs",
+            "ss",
+            "ds",
+        };
+        
         const char* group_one_mnemonics[] = {
             "add", 
             "or",
@@ -259,27 +277,34 @@ int main(int argc, char* argv[]) {
         
         if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
             if ((bytes[0] & 0x06) == 0x06) {
-                if ((bytes[0] & 0xF0) == 0x20) {
-                    NOT_IMPLEMENTED();
-                }
-            
-                if (bytes[0] & 0x01) {
-                    op_text = "pop";
-                } else {
-                    op_text = "push";
-                }
+                if ((bytes[0] & 0xF0) <= 0x10) {
+                    op_text = (bytes[0] & 0x01) ? "pop" : "push";
+                    
+                    const char* target = 0;
+                    switch ((bytes[0] >> 3) & 0x03) {
+                        case 0: target = "es"; break;
+                        case 1: target = "cs"; break;
+                        case 2: target = "ss"; break;
+                        case 3: target = "ds"; break;
+                    }
+                    
+                    capture_instruction(address, "%s %s\n", op_text, target);
+                    i += 1;
+                    continue;
+                    
+                } else if (bytes[0] & 0x07 == 0x07) {
+                    switch ((bytes[0] >> 3) & 0x03) {
+                        case 0: op_text = "daa"; break;
+                        case 1: op_text = "das"; break;
+                        case 2: op_text = "aaa"; break;
+                        case 3: op_text = "aas"; break;
+                    }
                 
-                const char* target = 0;
-                switch (bytes[0] & 0x18) {
-                    case 0: target = "es"; break;
-                    case 1: target = "cs"; break;
-                    case 2: target = "ss"; break;
-                    case 3: target = "ds"; break;
+                    capture_instruction(address, "%s\n", op_text);
+                    i += 1;
+                    continue;
+
                 }
-                
-                capture_instruction(address, "%s %s\n", op_text, target);
-                i += 1;
-                continue;
                 
             } else { 
                 op_text = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
@@ -409,7 +434,11 @@ int main(int argc, char* argv[]) {
                 
                     const char* effective_address = effective_address_table[rm];
                     if (displacement == 0) {
-                        sprintf(address_operand, "[%s]", effective_address);
+                        if (use_segment_override) {
+                            sprintf(address_operand, "[%s:%s]", segment_overrides[segment_override], effective_address);
+                        } else {
+                            sprintf(address_operand, "[%s]", effective_address);
+                        }
                     } else {
                         sprintf(address_operand, "[%s + %hd]", effective_address, displacement);
                     }
