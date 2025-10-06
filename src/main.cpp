@@ -106,10 +106,8 @@ void print_byte(u8 b, FILE* stream = stdout) {
     fputs(N2B[b&0xF], stream);
 }
 
-#define OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER  0x88
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY         0xC6
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER                0xB0
-#define OPCODE_MOV_MEMORY_TO_ACCUMULATOR                0xA0
+#define OPCODE_MOV_IMMEDIATE_TO_REGISTER 0xB0
+#define OPCODE_MOV_MEMORY_TO_ACCUMULATOR 0xA0
 
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
@@ -149,12 +147,31 @@ const char* effective_address_table[8] = {
     "bx"
 };
 
+const char* segments[] = {
+    "es",
+    "cs",
+    "ss",
+    "ds",
+};
+
+const char* group_one_mnemonics[] = {
+    "add", 
+    "or",
+    "adc",
+    "sbb",
+    "and",
+    "sub",
+    "xor",
+    "cmp"
+};
+
 enum OpClass {
     OP_CLASS_NONE                         = 0,
     OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 1,
     OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 2,
     OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
     OP_CLASS_REGISTER_MEMORY              = 4,
+    OP_CLASS_BIT_SHIFT                    = 5,
 };
 
 struct Instruction {
@@ -220,6 +237,15 @@ int main(int argc, char* argv[]) {
         bool use_segment_override = false;
         u8 segment_override = 0;
         
+        bool use_signed_immediate = false;
+        bool is_bit_shift = false;
+        u8 bit_shift_type = 0;
+        
+        bool extract_data = false;
+        
+        OpClass op_class = OP_CLASS_NONE;
+        const char* op_text = 0;
+        
         switch (bytes[0]) {
             case 0x26:
             case 0x2E:
@@ -232,48 +258,12 @@ int main(int argc, char* argv[]) {
             } break;
         }
         
-        OpClass op_class = OP_CLASS_NONE;
-        u8 opcode_byte = 0;
-        bool use_signed_immediate = false;
+        int byte_count = 0;
         
-        if ((bytes[0] & 0b11111100) == OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER) {
-            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
-            opcode_byte = OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER;
-        
-        } else if ((bytes[0] & 0b11111110) == OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY) {
-            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
-            opcode_byte = OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY;
-        
-        } else if ((bytes[0] & 0b11111100) == 0b10000000) {
-            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
-            opcode_byte = bytes[1] & 0b00111000;
-            use_signed_immediate = (bytes[0] & 0b00000010) != 0; 
-                    
-        } else if ((bytes[0] & 0b11000110) == 0b00000100) {
-            op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
-            opcode_byte = bytes[0] & 0b00111000;
-            
-        }
-        
-        const char* op_text = 0;
-        
-        const char* segments[] = {
-            "es",
-            "cs",
-            "ss",
-            "ds",
-        };
-        
-        const char* group_one_mnemonics[] = {
-            "add", 
-            "or",
-            "adc",
-            "sbb",
-            "and",
-            "sub",
-            "xor",
-            "cmp"
-        };
+        u8 word = bytes[0] & 0x01;
+        u8 mode = bytes[1] >> 6;
+        u8 rm   = bytes[1] & 0x07;
+        u8 dir  = bytes[0] & 0x02;
         
         if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
             if ((bytes[0] & 0x06) == 0x06) {
@@ -303,20 +293,194 @@ int main(int argc, char* argv[]) {
 
                 if (bytes[0] & 0x04) {
                     op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
+                    byte_count += 1;
                 } else {
                     op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
-                } 
+                    byte_count += 2;
+                }
             }
         
-        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x83) {
+        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x82) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
             op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
+            use_signed_immediate = (bytes[0] & 0b00000010) != 0;
+            
+            byte_count += 2;
+            
+        } else if (bytes[0] == 0x83) {
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
+            use_signed_immediate = true;
+            
+            byte_count += 2;
+                
+        } else if (bytes[0] >= 0x84 && bytes[0] <= 0x8B) {
+            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            
+            const char* mnemonics[] = {
+                "test",
+                "test",
+                "xchg",
+                "xchg",
+                "mov",
+                "mov",
+                "mov",
+                "mov"
+            };
+            
+            op_text = mnemonics[(bytes[0] & 0x0F) - 0x04];
+            byte_count += 2;
+        
+        } else if (bytes[0] == 0x8D) {
+            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            op_text = "lea";
+            dir = 1;
+            byte_count += 2;
         
         } else if (bytes[0] == 0x8F) {
             op_class = OP_CLASS_REGISTER_MEMORY;
             op_text = "pop";
+            byte_count += 2;
             
-        } else if ((bytes[0] >> 1) == 0x7F) {            
+        } else if (bytes[0] >= 0x90 && bytes[0] <= 0x97) {
+            capture_instruction(address, "xchg ax, %s\n", register_map_word[bytes[0] & 0x0F]);
+            i += 1;
+            continue;
+            
+        } else if ((bytes[0] & 0xFE) == 0x98) { 
+            capture_instruction(address, "%s\n", (bytes[0] & 0x01) ? "cbw" : "cwd");
+            i += 1;
+            continue;
+        
+        } else if ((bytes[0] & 0xFC) == 0x9C) {
+            const char* mnemonics[] = {
+                "pushf",
+                "popf",
+                "sahf",
+                "lahf",
+            };
+            
+            capture_instruction(address, "%s\n", mnemonics[bytes[0] & 0x03]);
+            i += 1;
+            continue;
+        
+        } else if ((bytes[0] & 0xFC) == 0xA4 || (bytes[0] & 0xFC) == 0xAC) {
+            if (bytes[0] & 0x08) {
+                op_text = (bytes[0] & 0x02) ? "lods" : "scas";
+            } else {
+                op_text = (bytes[0] & 0x02) ? "movs" : "cmps";
+            }
+            
+            word = bytes[0] & 0x01;
+            capture_instruction(address, "%s%s\n", op_text, word ? "w" : "b");
+            
+            i += 1;
+            continue;
+            
+        } else if ((bytes[0] & 0xFE) == 0xC2) {
+            u8 use_immediate = bytes[0] & 0x01;
+            if (use_immediate) {
+                extract_data = true;
+                word = 1;
+                byte_count += 1;
+                
+            } else {
+                capture_instruction(address, "ret\n");
+                i += 1;
+                continue;
+            }
+        
+        } else if ((bytes[0] & 0xFE) == 0xC4) {
+            op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            op_text = (bytes[0] & 0x01) ? "lds" : "les";
+            dir = 1;
+            byte_count += 2;
+        
+        } else if ((bytes[0] & 0xFE) == 0xC6) {
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            op_text = "mov";
+            byte_count += 2;
+        
+        } else if (bytes[0] >= 0xD0 && bytes[0] <= 0xD3) { 
+            const char* mnemonics[] = {
+                "rol",
+                "ror",
+                "rcl",
+                "rcr",
+                "shl", // "sal"
+                "shr",
+                "unused",
+                "sar"
+            };
+            
+            op_text = mnemonics[(bytes[1] >> 3) & 0x07];
+            op_class = OP_CLASS_REGISTER_MEMORY;
+            is_bit_shift = true;
+            bit_shift_type = bytes[0] & 0x02;
+
+            byte_count += 2;
+        
+        } else if ((bytes[0] & 0xFC) == 0xD4) {
+            const char* mnemonics[] = {
+                "aam",
+                "aad",
+                "unused",
+                "xlat",
+            };
+        
+            u8 index = bytes[0] & 0x03;
+            capture_instruction(address, "%s\n", mnemonics[index]);
+            
+            if (index >= 2) {
+                i += 1;
+            } else {
+                i += 2;
+            }
+            
+            continue;   
+        
+        } else if (bytes[0] >= 0xE4 && bytes[0] <= 0xE7) {
+            op_text = (bytes[0] & 0x2) ? "out" : "in";
+            op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
+            word = 0;
+            byte_count += 1;
+            
+        } else if (bytes[0] >= 0xEC && bytes[0] <= 0xEF) {
+            dir = bytes[0] & 0x02;
+            op_text = dir ? "out" : "in";
+            u8 word = bytes[0] & 0x01;
+
+            if (dir) {
+                capture_instruction(address, "%s dx, %s\n", op_text, word ? "ax" : "al");
+            } else {
+                capture_instruction(address, "%s %s, dx\n", op_text, word ? "ax" : "al");
+            }
+            
+            i += 1;
+            continue;
+            
+        } else if (bytes[0] == 0xF3) {
+            capture_instruction(address, "rep\n");
+            i += 1;
+            continue;
+        
+        } else if ((bytes[0] & 0xFE) == 0xF6) {
+            const char* mnemonics[] = {
+                "test",
+                "unused",
+                "not",
+                "neg",
+                "mul",
+                "imul",
+                "div",
+                "idiv",
+            };
+            
+            op_class = OP_CLASS_REGISTER_MEMORY;
+            op_text = mnemonics[(bytes[1] >> 3) & 0x07];
+            byte_count += 2;
+        
+        } else if ((bytes[0] & 0xFE) == 0xFE) {            
             const char* mnemonics[] = {
                 "inc",
                 "dec",
@@ -328,33 +492,14 @@ int main(int argc, char* argv[]) {
             };
             
             op_class = OP_CLASS_REGISTER_MEMORY;
-            op_text = mnemonics[(bytes[1] >> 3) & 0x07];
-            
-        } else {
-            // nocheckin: this is now confusing as we add more types of instructions that use different tables.
-            switch (opcode_byte) {
-                case OPCODE_MOV_IMMEDIATE_TO_REGISTER_MEMORY:
-                case OPCODE_MOV_REGISTER_OR_MEMORY_TO_FROM_REGISTER: 
-                    op_text = "mov"; 
-                break;
-                
-                case 0x00: op_text = "add"; break;
-                case 0x28: op_text = "sub"; break;
-                case 0x38: op_text = "cmp"; break;
-                
-                default: print_byte(bytes[0]); not_implemented(); 
-            }
+            op_text = mnemonics[(bytes[1] >> 3) & 0x07]; 
+            byte_count += 2;
         }
-        
-        int byte_count = 0;
-        
-        u8 word = bytes[0] & 0x01;
-        u8 mode = bytes[1] >> 6;
-        u8 rm   = bytes[1] & 0x07;
 
         char address_operand[32];
         
         switch (op_class) {
+            case OP_CLASS_BIT_SHIFT:
             case OP_CLASS_REGISTER_MEMORY:
             case OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY:
             case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
@@ -409,38 +554,12 @@ int main(int argc, char* argv[]) {
             } break;
         }
         
-        if (op_class == OP_CLASS_REGISTER_MEMORY) {            
-            byte_count += 2;
-            
-            const char* size_label = word ? "word" : "byte";
-            capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
-            
-            i += byte_count;
-            continue;
-            
-        } else if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
-
-            u8 dir  = bytes[0] & 0x02;
-            u8 reg  = (bytes[1] & 0x38) >> 3; 
-            
-            byte_count += 2;
-            
-            const char** reg_table = word ? register_map_word : register_map_byte; 
-            const char* reg_operand = reg_table[reg];
-            const char* dest   = dir ? reg_operand : address_operand;
-            const char* source = dir ? address_operand : reg_operand;
-            
-            capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
-
-            i += byte_count;
-            continue;
+        extract_data |= (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY);
+        extract_data |= (op_class == OP_CLASS_IMMEDIATE_TO_ACCUMULATOR);
         
-        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY) {
-            byte_count += 2; 
-            
-            u16 data = 0;
+        u16 data = 0;
+        if (extract_data) {
             if (word) {
-                // TODO(roger): do we need use_signed_immediate? perhaps we can parse 's' for mov as well?
                 if (use_signed_immediate) {
                     u8 sign = bytes[byte_count] & 0x80;
                     if (sign) {
@@ -456,7 +575,34 @@ int main(int argc, char* argv[]) {
                 data = bytes[byte_count];
                 byte_count += 1;
             }
+        }
+        
+        if (op_class == OP_CLASS_REGISTER_MEMORY) {            
+            const char* size_label = word ? "word" : "byte";
             
+            if (is_bit_shift) {
+                capture_instruction(address, "%s %s %s, %s\n", op_text, size_label, address_operand, bit_shift_type ? "cl" : "1");
+            } else {
+                capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
+            }
+            
+            i += byte_count;
+            continue;
+            
+        } else if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
+            u8 reg = (bytes[1] & 0x38) >> 3; 
+            
+            const char** reg_table = word ? register_map_word : register_map_byte; 
+            const char* reg_operand = reg_table[reg];
+            const char* dest   = dir ? reg_operand : address_operand;
+            const char* source = dir ? address_operand : reg_operand;
+            
+            capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+
+            i += byte_count;
+            continue;
+        
+        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY) {
             const char* size_label = word ? "word" : "byte";
             capture_instruction(address, "%s %s, %s %hu\n", op_text, address_operand, size_label, data);
 
@@ -464,8 +610,6 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_MEMORY_TO_ACCUMULATOR) {
-            u8 dir  = bytes[0] & 0x02;
-
             u16 address = bytes[1] | bytes[2] << 8;
 
             if (dir) {
@@ -500,26 +644,19 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if (op_class == OP_CLASS_IMMEDIATE_TO_ACCUMULATOR) {
-            byte_count += 1;
-
-            u16 data = 0;
-            if (word) {
-                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
-                byte_count += 2;
-            } else {
-                data = bytes[byte_count];
-                byte_count += 1;
-            }
-            
             const char* size_label = word ? "word" : "byte";
             const char* reg = word ? "ax" : "al";
             
-            capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
+            if (dir) {
+                capture_instruction(address, "%s %s %hu, %s\n", op_text, size_label, data, reg);
+            } else {
+                capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
+            }
         
             i += byte_count;    
             continue;
         
-        } else if ((bytes[0] & 0xE0) == 0x40) {
+        } else if (bytes[0] >= 0x40 && bytes[0] <= 0x5F) {
             const char* reg = register_map_word[bytes[0] & 0x0F];
             
             const char* mnemonics[] = {
@@ -644,7 +781,8 @@ int main(int argc, char* argv[]) {
         fputs("Unable to decode byte: ", stderr);
         print_byte(bytes[0], stderr);
         fputc('\n', stderr);
-        ERROR_ABORT();
+        //ERROR_ABORT();
+        break;
     }
     
     // Labels
