@@ -59,6 +59,18 @@ void sb_appendf(StringBuilder* builder, const char* fmt, ...) {
     va_end(ap);
 }
 
+void bubble_sort(int arr[], int n) {
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = 0; j < n - i - 1; j++) {
+            if (arr[j] > arr[j + 1]) {
+                int temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+}
+
 struct MemoryArena {
     size_t index;
     size_t capacity;
@@ -941,17 +953,16 @@ int main(int argc, char* argv[]) {
         label_addresses[label_counter] = instructions[i].jump_address;
         label_counter++;
     }
+
+    int label_count = label_counter; 
+    bubble_sort(label_addresses, label_count);
     
+    label_counter = 0;
     printf("bits 16\n");
     for (int i = 0; i < instruction_count; i++) {
-    
-        // TODO(roger): if we sort the label_addresses, then we can eliminate this loop and use a current index to check
-        // if we need to instead the next label into the output or not.
-        for (int j = 0; j < label_counter; j++) {
-            if (label_addresses[j] == instructions[i].address) {
-                printf("label_%d:\n", label_addresses[j]);
-                break;
-            }
+        if (label_counter < label_count && label_addresses[label_counter] == instructions[i].address) {
+            printf("label_%d:\n", label_addresses[label_counter]);
+            label_counter++;
         }
     
         printf(instructions[i].string);
