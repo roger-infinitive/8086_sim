@@ -1,3 +1,8 @@
+// TODO(roger): Create utility.h
+
+// TODO(roger): 8086 uses 1 mb for memory. Load file into this range. 
+//      MEMORY_ACCESS_MASK can be used to prevent reading out of bounds.
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -106,9 +111,6 @@ void print_byte(u8 b, FILE* stream = stdout) {
     fputs(N2B[b&0xF], stream);
 }
 
-#define OPCODE_MOV_IMMEDIATE_TO_REGISTER 0xB0
-#define OPCODE_MOV_MEMORY_TO_ACCUMULATOR 0xA0
-
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
 #define MODE_MEMORY_16_BIT_DISPLACEMENT 2
@@ -174,6 +176,7 @@ enum OpClass {
     OP_CLASS_BIT_SHIFT                    = 5,
     OP_CLASS_IMMEDIATE                    = 6,
     OP_CLASS_SEG_REG                      = 7,
+    OP_CLASS_IMMEDIATE_TO_REGISTER        = 8,
 };
 
 struct Instruction {
@@ -257,12 +260,14 @@ int main(int argc, char* argv[]) {
         
         bool extract_data = false;
         bool extract_word = false;
+        bool use_lock = false;
         
         OpClass op_class = OP_CLASS_NONE;
         const char* op_text = 0;
         
         if (bytes[0] == 0xF0) {
             instruction_prefix = "lock ";
+            use_lock = true;
             i += 1;
             bytes = &file.buffer[i];
         }
@@ -351,7 +356,13 @@ int main(int argc, char* argv[]) {
             
             op_text = mnemonics[(bytes[0] & 0x0F) - 0x04];
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
-            dir = bytes[0] & 0x02;
+            
+            if (use_lock) {
+                dir = 0;
+            } else {
+                dir = bytes[0] & 0x02;
+            }
+            
             byte_count += 2;
         
         } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
@@ -381,7 +392,7 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if ((bytes[0] & 0xFE) == 0x98) { 
-            capture_instruction(address, "%s\n", (bytes[0] & 0x01) ? "cbw" : "cwd");
+            capture_instruction(address, "%s\n", (bytes[0] & 0x01) ? "cwd" : "cbw");
             i += 1;
             continue;
         
@@ -410,6 +421,23 @@ int main(int argc, char* argv[]) {
             i += 1;
             continue;
         
+        } else if ((bytes[0] & 0xFC) == 0xA0) {
+            u16 address = bytes[1] | bytes[2] << 8;
+            if (dir) {
+                capture_instruction(address, "mov [%hd], %s\n", address, word ? "ax" : "al");
+            } else {
+                capture_instruction(address, "mov %s, [%hd]\n", word ? "ax" : "al", address);
+            }
+            i += 3;
+            continue;
+            
+        } else if ((bytes[0] & 0xFE) == 0xA8) {
+            extract_data = true;
+            extract_word = word != 0;
+            op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
+            op_text = "test";
+            byte_count += 1;
+        
         } else if ((bytes[0] & 0xFC) == 0xA4 || (bytes[0] & 0xFC) == 0xAC) {
             if (bytes[0] & 0x08) {
                 op_text = (bytes[0] & 0x02) ? "lods" : "scas";
@@ -423,6 +451,16 @@ int main(int argc, char* argv[]) {
             i += 1;
             continue;
             
+        } else if ((bytes[0] & 0xF0) == 0xB0) {
+            op_text = "mov";
+            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER;
+                        
+            word = bytes[0] & 0x08;
+            extract_data = true;
+            extract_word = word != 0;
+        
+            byte_count += 1;
+        
         } else if ((bytes[0] & 0xFE) == 0xC2) {
             u8 no_immediate = bytes[0] & 0x01;
             if (no_immediate) {
@@ -638,7 +676,7 @@ int main(int argc, char* argv[]) {
                 "inc",
                 "dec",
                 "call",
-                "call",
+                "call far",
                 "jmp",
                 "jmp far",
                 "push"
@@ -772,37 +810,13 @@ int main(int argc, char* argv[]) {
 
             i += byte_count;
             continue;
-            
-        } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_MEMORY_TO_ACCUMULATOR) {
-            u16 address = bytes[1] | bytes[2] << 8;
-
-            if (dir) {
-                capture_instruction(address, "mov [%hd], %s\n", address, word ? "ax" : "al");
-            } else {
-                capture_instruction(address, "mov %s, [%hd]\n", word ? "ax" : "al", address);
-            }
-            
-            i += 3;
-            continue;
       
-        } else if ((bytes[0] & 0b11110000) == OPCODE_MOV_IMMEDIATE_TO_REGISTER) {
-            u8 reg  = bytes[0] & 0x07;
-            word = bytes[0] & 0x08;
-            byte_count += 1;
-
+        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER) {
             const char** reg_table = word ? register_map_word : register_map_byte; 
-            
-            u16 data = 0;
-            if (word) {
-                data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
-                byte_count += 2;
-            } else {
-                data = bytes[byte_count];
-                byte_count += 1;
-            }
+            const char* reg = reg_table[bytes[0] & 0x07];
             
             const char* size_label = word ? "word" : "byte";
-            capture_instruction(address, "mov %s, %s %hu\n", reg_table[reg], size_label, data);
+            capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
         
             i += byte_count;    
             continue;
