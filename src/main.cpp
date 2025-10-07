@@ -328,6 +328,22 @@ int main(int argc, char* argv[]) {
                 }
             }
             
+        } else if (bytes[0] >= 0x40 && bytes[0] <= 0x5F) {
+            const char* reg = register_map_word[bytes[0] & 0x07];
+            
+            const char* mnemonics[] = {
+                "inc",
+                "dec",
+                "push",
+                "pop",
+            };
+            
+            op_text = mnemonics[(bytes[0] >> 3) & 0x03];
+            capture_instruction(address, "%s %s\n", op_text, reg);
+            
+            i += 1;
+            continue;
+            
         } else if ((bytes[0] & 0xF0) == 0x70) {
             const char* mnemonics[] = {
                 "jo",
@@ -587,7 +603,19 @@ int main(int argc, char* argv[]) {
                 i += 2;
             }
             
-            continue;   
+            continue;
+            
+        } else if ((bytes[0] & 0xFC) == 0xE0) {
+            const char* mnemonics[] = {
+                "loopnz",
+                "loopz",
+                "loop",
+                "jcxz",
+            };
+        
+            i += 2; 
+            capture_jump_instruction(address, i + (char)bytes[1], mnemonics[bytes[0] & 0x03]);
+            continue;
         
         } else if (bytes[0] >= 0xE4 && bytes[0] <= 0xE7) {
             op_text = (bytes[0] & 0x2) ? "out" : "in";
@@ -793,120 +821,86 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        if (op_class == OP_CLASS_SEG_REG) {
-            u8 sr = (bytes[1] >> 3) & 0x03;
-            capture_instruction(address, "%s %s, %s\n", op_text, address_operand, segments[sr]);
-            i += byte_count;
-            continue;
-        
-        } else if (op_class == OP_CLASS_IMMEDIATE) {
-            const char* size_label = extract_word ? "word" : "byte";
-            capture_instruction(address, "%s %s %hu\n", op_text, size_label, data);
-            i += byte_count;
-            continue;
-        
-        } else if (op_class == OP_CLASS_REGISTER_MEMORY) {            
-            const char* size_label = word ? "word" : "byte";
+        switch (op_class) {
+            case OP_CLASS_SEG_REG: {
+                u8 sr = (bytes[1] >> 3) & 0x03;
+                capture_instruction(address, "%s %s, %s\n", op_text, address_operand, segments[sr]);
+                i += byte_count;
+                continue;
+            } break;
             
-            if (is_bit_shift) {
-                capture_instruction(address, "%s %s %s, %s\n", op_text, size_label, address_operand, bit_shift_type ? "cl" : "1");
-            } else {
-                capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
-            }
+            case OP_CLASS_IMMEDIATE: {
+                const char* size_label = extract_word ? "word" : "byte";
+                capture_instruction(address, "%s %s %hu\n", op_text, size_label, data);
+                i += byte_count;
+                continue;
+            } break;
             
-            i += byte_count;
-            continue;
+            case OP_CLASS_REGISTER_MEMORY: {            
+                const char* size_label = word ? "word" : "byte";
+                
+                if (is_bit_shift) {
+                    capture_instruction(address, "%s %s %s, %s\n", op_text, size_label, address_operand, bit_shift_type ? "cl" : "1");
+                } else {
+                    capture_instruction(address, "%s %s %s\n", op_text, size_label, address_operand);
+                }
+                
+                i += byte_count;
+                continue;
+            } break;
+                
+            case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
+                u8 reg = (bytes[1] & 0x38) >> 3; 
+                
+                const char** reg_table = word ? register_map_word : register_map_byte; 
+                const char* reg_operand = reg_table[reg];
+                const char* dest   = dir ? reg_operand : address_operand;
+                const char* source = dir ? address_operand : reg_operand;
+                
+                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+    
+                i += byte_count;
+                continue;
+            } break;
             
-        } else if (op_class == OP_CLASS_REGISTER_MEMORY_AND_REGISTER) {
-            u8 reg = (bytes[1] & 0x38) >> 3; 
-            
-            const char** reg_table = word ? register_map_word : register_map_byte; 
-            const char* reg_operand = reg_table[reg];
-            const char* dest   = dir ? reg_operand : address_operand;
-            const char* source = dir ? address_operand : reg_operand;
-            
-            capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
-
-            i += byte_count;
-            continue;
-        
-        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY) {
-            const char* size_label = extract_word ? "word" : "byte";
-            capture_instruction(address, "%s %s, %s %hu\n", op_text, address_operand, size_label, data);
-
-            i += byte_count;
-            continue;
-      
-        } else if (op_class == OP_CLASS_IMMEDIATE_TO_REGISTER) {
-            const char** reg_table = word ? register_map_word : register_map_byte; 
-            const char* reg = reg_table[bytes[0] & 0x07];
-            
-            const char* size_label = extract_word ? "word" : "byte";
-            capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
-        
-            i += byte_count;    
-            continue;
-            
-        } else if (op_class == OP_CLASS_IMMEDIATE_TO_ACCUMULATOR) {
-            const char* size_label = extract_word ? "word" : "byte";
-            const char* reg = word ? "ax" : "al";
-            
-            if (dir) {
-                capture_instruction(address, "%s %s %hu, %s\n", op_text, size_label, data, reg);
-            } else {
+            case OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY: {
+                const char* size_label = extract_word ? "word" : "byte";
+                capture_instruction(address, "%s %s, %s %hu\n", op_text, address_operand, size_label, data);
+    
+                i += byte_count;
+                continue;
+            } break;
+          
+            case OP_CLASS_IMMEDIATE_TO_REGISTER: {
+                const char** reg_table = word ? register_map_word : register_map_byte; 
+                const char* reg = reg_table[bytes[0] & 0x07];
+                
+                const char* size_label = extract_word ? "word" : "byte";
                 capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
-            }
-        
-            i += byte_count;    
-            continue;
-        
-        } else if (bytes[0] >= 0x40 && bytes[0] <= 0x5F) {
-            const char* reg = register_map_word[bytes[0] & 0x07];
             
-            const char* mnemonics[] = {
-                "inc",
-                "dec",
-                "push",
-                "pop",
-            };
+                i += byte_count;    
+                continue;
+            } break;
+                
+            case OP_CLASS_IMMEDIATE_TO_ACCUMULATOR: {
+                const char* size_label = extract_word ? "word" : "byte";
+                const char* reg = word ? "ax" : "al";
+                
+                if (dir) {
+                    capture_instruction(address, "%s %s %hu, %s\n", op_text, size_label, data, reg);
+                } else {
+                    capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
+                }
             
-            op_text = mnemonics[(bytes[0] >> 3) & 0x03];
-            capture_instruction(address, "%s %s\n", op_text, reg);
-            
-            i += 1;
-            continue;
-        } else if (bytes[0] == 0x0E) {
-            capture_instruction(address, "push cs\n");
-            i += 1;
-            continue;
-        
-        } else if (bytes[0] == 0xE0) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "loopnz");
-            continue;
-            
-        } else if (bytes[0] == 0xE1) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "loopz");
-            continue;
-            
-        } else if (bytes[0] == 0xE2) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "loop");
-            continue;
-             
-        } else if (bytes[0] == 0xE3) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jcxz");
-            continue;
-             
+                i += byte_count;    
+                continue;
+            } break;
         }
         
         fputs("Unable to decode byte: ", stderr);
         print_byte(bytes[0], stderr);
         fputc('\n', stderr);
-        //ERROR_ABORT();
-        break;
+        ERROR_ABORT();
     }
     
     // Labels
