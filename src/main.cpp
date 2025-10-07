@@ -327,6 +327,32 @@ int main(int argc, char* argv[]) {
                     byte_count += 2;
                 }
             }
+            
+        } else if ((bytes[0] & 0xF0) == 0x70) {
+            const char* mnemonics[] = {
+                "jo",
+                "jno",
+                "jb",
+                "jnb",
+                "je",
+                "jne",
+                "jbe",
+                "jnbe",
+                "js",
+                "jns",
+                "jp",
+                "jnp",
+                "jl",
+                "jnl",
+                "jle",
+                "jnle"
+            };
+            
+            op_text = mnemonics[bytes[0] & 0x0F];
+            
+            i += 2; // move forward before capturing target address.
+            capture_jump_instruction(address, i + (char)bytes[1], op_text);
+            continue;
         
         } else if (bytes[0] >= 0x80 && bytes[0] <= 0x82) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
@@ -815,7 +841,7 @@ int main(int argc, char* argv[]) {
             const char** reg_table = word ? register_map_word : register_map_byte; 
             const char* reg = reg_table[bytes[0] & 0x07];
             
-            const char* size_label = word ? "word" : "byte";
+            const char* size_label = extract_word ? "word" : "byte";
             capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
         
             i += byte_count;    
@@ -853,86 +879,6 @@ int main(int argc, char* argv[]) {
             capture_instruction(address, "push cs\n");
             i += 1;
             continue;
-        
-        } else if (bytes[0] == 0x70) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jo");
-            continue;
-        
-        } else if (bytes[0] == 0x71) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jno");
-            continue;
-            
-        } else if (bytes[0] == 0x72) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jb");
-            continue;
-            
-        } else if (bytes[0] == 0x73) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jnb");
-            continue;
-                                
-        } else if (bytes[0] == 0x74) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "je");
-            continue;
-        
-        } else if (bytes[0] == 0x75) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jne");
-            continue;
-        
-        } else if (bytes[0] == 0x76) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jbe");
-            continue;
-        
-        } else if (bytes[0] == 0x77) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jnbe");
-            continue;
-            
-        } else if (bytes[0] == 0x78) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "js");
-            continue;        
-        
-        } else if (bytes[0] == 0x79) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jns");
-            continue;        
-            
-        } else if (bytes[0] == 0x7A) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jp");
-            continue;
-            
-        } else if (bytes[0] == 0x7B) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jnp");
-            continue;
-
-        } else if (bytes[0] == 0x7C) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jl");
-            continue;
-            
-        } else if (bytes[0] == 0x7D) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jnl");
-            continue;
-            
-        } else if (bytes[0] == 0x7E) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jle");
-            continue;            
-        
-        } else if (bytes[0] == 0x7F) {
-            i += 2;
-            capture_jump_instruction(address, i + (char)bytes[1], "jnle");
-            continue;            
         
         } else if (bytes[0] == 0xE0) {
             i += 2;
