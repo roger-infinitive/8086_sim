@@ -47,6 +47,18 @@ void log_error_impl(const char *fmt, ...) {
 #define critical_error(...) do { log_error_impl(__VA_ARGS__); ERROR_ABORT(); } while (0)
 #define not_implemented()   critical_error("NOT IMPLEMENTED %s(%d)\n", __FILE__, __LINE__)
 
+struct StringBuilder {
+    char* buffer;
+    u32 length;
+};
+
+void sb_appendf(StringBuilder* builder, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    builder->length += vsprintf(builder->buffer + builder->length, fmt, ap);
+    va_end(ap);
+}
+
 struct MemoryArena {
     size_t index;
     size_t capacity;
@@ -408,8 +420,8 @@ int main(int argc, char* argv[]) {
             byte_count += 2;
         
         } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
-            op_text = "mov";
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            op_text = "mov";
             byte_count += 2;
             
         } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
@@ -742,6 +754,10 @@ int main(int argc, char* argv[]) {
         }
 
         char address_operand[32];
+        memset(address_operand, 0, 32);
+
+        StringBuilder sb = {};
+        sb.buffer = address_operand;
         
         switch (op_class) {
             case OP_CLASS_SEG_REG:
@@ -750,8 +766,8 @@ int main(int argc, char* argv[]) {
             case OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY:
             case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
                 if (mode == MODE_REGISTER) {
-                    const char** reg_table = word ? register_map_word : register_map_byte; 
-                    strcpy(address_operand, reg_table[rm]);
+                    const char** reg_table = word ? register_map_word : register_map_byte;
+                    sb_appendf(&sb, reg_table[rm]); 
                 
                 } else {
                     short displacement = 0;
@@ -760,10 +776,9 @@ int main(int argc, char* argv[]) {
                         displacement = bytes[2] | (bytes[3] << 8);
     
                         if (use_segment_override) {
-                            sprintf(address_operand, "%s:[%hd]", segments[segment_override], displacement);
-                        } else {
-                            sprintf(address_operand, "[%hd]", displacement);
+                            sb_appendf(&sb, "%s:", segments[segment_override]);
                         }
+                        sb_appendf(&sb, "[%hd]", displacement);
                         
                         byte_count += 2;
     
@@ -782,20 +797,16 @@ int main(int argc, char* argv[]) {
                         }                    
                     
                         const char* effective_address = effective_address_table[rm];
-                    
-                        char address_buffer[32];
-                        
-                        if (displacement == 0) {
-                            sprintf(address_buffer, "[%s]", effective_address);
-                        } else {
-                            sprintf(address_buffer, "[%s + %hd]", effective_address, displacement);
-                        }
-                        
+
                         if (use_segment_override) {
-                            sprintf(address_operand, "%s:%s", segments[segment_override], address_buffer);
-                        } else {
-                            strcpy(address_operand, address_buffer);
+                            sb_appendf(&sb, "%s:", segments[segment_override]);
                         }
+
+                        sb_appendf(&sb, "[%s", effective_address);
+                        if (displacement != 0) {
+                            sb_appendf(&sb, " + %hd", displacement);
+                        }
+                        sb_appendf(&sb, "]");
                     }
                 }
             } break;
