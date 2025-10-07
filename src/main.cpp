@@ -193,13 +193,13 @@ const char* group_one_mnemonics[] = {
 
 enum OpClass {
     OP_CLASS_NONE                         = 0,
-    OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 1,
-    OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 2,
-    OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
-    OP_CLASS_REGISTER_MEMORY              = 4,
-    OP_CLASS_IMMEDIATE                    = 5,
-    OP_CLASS_SEG_REG                      = 6,
-    OP_CLASS_IMMEDIATE_TO_REGISTER        = 7,
+    OP_CLASS_REGISTER_MEMORY              = 1,
+    OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 2,
+    OP_CLASS_IMMEDIATE                    = 3,
+    OP_CLASS_IMMEDIATE_TO_REGISTER        = 4,
+    OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 5,
+    OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 6,
+    OP_CLASS_SEG_REG                      = 7,
 };
 
 struct Instruction {
