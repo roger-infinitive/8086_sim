@@ -197,10 +197,9 @@ enum OpClass {
     OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 2,
     OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 3,
     OP_CLASS_REGISTER_MEMORY              = 4,
-    OP_CLASS_BIT_SHIFT                    = 5,
-    OP_CLASS_IMMEDIATE                    = 6,
-    OP_CLASS_SEG_REG                      = 7,
-    OP_CLASS_IMMEDIATE_TO_REGISTER        = 8,
+    OP_CLASS_IMMEDIATE                    = 5,
+    OP_CLASS_SEG_REG                      = 6,
+    OP_CLASS_IMMEDIATE_TO_REGISTER        = 7,
 };
 
 struct Instruction {
@@ -278,10 +277,11 @@ int main(int argc, char* argv[]) {
         bool use_segment_override = false;
         u8 segment_override = 0;
         
-        bool use_signed_immediate = false;
         bool is_bit_shift = false;
         u8 bit_shift_type = 0;
-        
+
+        bool use_signed_immediate = false;
+        bool decode_register_memory = false;
         bool extract_data = false;
         bool extract_word = false;
         bool use_lock = false;
@@ -348,6 +348,7 @@ int main(int argc, char* argv[]) {
                     byte_count += 1;
                 } else {
                     op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+                    decode_register_memory = true;
                     byte_count += 2;
                 }
             }
@@ -396,6 +397,7 @@ int main(int argc, char* argv[]) {
         
         } else if (bytes[0] >= 0x80 && bytes[0] <= 0x82) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            decode_register_memory = true;
             extract_data = true;
             extract_word = word != 0;
             op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
@@ -405,6 +407,7 @@ int main(int argc, char* argv[]) {
             
         } else if (bytes[0] == 0x83) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            decode_register_memory = true;
             extract_data = true;
             extract_word = word != 0;
             op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
@@ -422,6 +425,7 @@ int main(int argc, char* argv[]) {
             
             op_text = mnemonics[(bytes[0] & 0x0F) - 0x04];
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            decode_register_memory = true;
             
             if (use_lock) {
                 dir = 0;
@@ -433,22 +437,26 @@ int main(int argc, char* argv[]) {
         
         } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            decode_register_memory = true;
             op_text = "mov";
             byte_count += 2;
             
         } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
             op_class = OP_CLASS_SEG_REG;
+            decode_register_memory = true;
             op_text = "mov";
             byte_count += 2;
         
         } else if (bytes[0] == 0x8D) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            decode_register_memory = true;
             op_text = "lea";
             dir = 1;
             byte_count += 2;
         
         } else if (bytes[0] == 0x8F) {
             op_class = OP_CLASS_REGISTER_MEMORY;
+            decode_register_memory = true;
             op_text = "pop";
             byte_count += 2;
             
@@ -544,6 +552,7 @@ int main(int argc, char* argv[]) {
         
         } else if ((bytes[0] & 0xFE) == 0xC4) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
+            decode_register_memory = true;
             op_text = (bytes[0] & 0x01) ? "lds" : "les";
             word = 1;
             dir = 1;
@@ -551,6 +560,7 @@ int main(int argc, char* argv[]) {
         
         } else if ((bytes[0] & 0xFE) == 0xC6) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
+            decode_register_memory = true;
             extract_data = true;
             extract_word = word != 0;
             op_text = "mov";
@@ -605,6 +615,7 @@ int main(int argc, char* argv[]) {
             
             op_text = mnemonics[(bytes[1] >> 3) & 0x07];
             op_class = OP_CLASS_REGISTER_MEMORY;
+            decode_register_memory = true;
             is_bit_shift = true;
             bit_shift_type = bytes[0] & 0x02;
 
@@ -729,6 +740,7 @@ int main(int argc, char* argv[]) {
                 op_class = OP_CLASS_REGISTER_MEMORY;
             }
             
+            decode_register_memory = true;
             op_text = mnemonics[op];
             byte_count += 2;
         
@@ -761,6 +773,7 @@ int main(int argc, char* argv[]) {
             };
             
             op_class = OP_CLASS_REGISTER_MEMORY;
+            decode_register_memory = true;
             op_text = mnemonics[(bytes[1] >> 3) & 0x07]; 
             byte_count += 2;
         }
@@ -771,57 +784,51 @@ int main(int argc, char* argv[]) {
         StringBuilder sb = {};
         sb.buffer = address_operand;
         
-        switch (op_class) {
-            case OP_CLASS_SEG_REG:
-            case OP_CLASS_BIT_SHIFT:
-            case OP_CLASS_REGISTER_MEMORY:
-            case OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY:
-            case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
-                if (mode == MODE_REGISTER) {
-                    const char** reg_table = word ? register_map_word : register_map_byte;
-                    sb_appendf(&sb, reg_table[rm]); 
-                
-                } else {
-                    short displacement = 0;
-     
-                    if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
-                        displacement = bytes[2] | (bytes[3] << 8);
-    
-                        if (use_segment_override) {
-                            sb_appendf(&sb, "%s:", segments[segment_override]);
-                        }
-                        sb_appendf(&sb, "[%hd]", displacement);
-                        
-                        byte_count += 2;
-    
-                    } else {
-                        if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                            u8 sign = bytes[2] & 0x80;
-                            if (sign) {
-                                displacement = 0xFF00;
-                            }
-                            displacement |= bytes[2];
-                            byte_count += 1;
-                        
-                        } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                            displacement = bytes[2] | (bytes[3] << 8);
-                            byte_count += 2;
-                        }                    
-                    
-                        const char* effective_address = effective_address_table[rm];
+        if (decode_register_memory) {
+            if (mode == MODE_REGISTER) {
+                const char** reg_table = word ? register_map_word : register_map_byte;
+                sb_appendf(&sb, reg_table[rm]); 
+            
+            } else {
+                short displacement = 0;
+ 
+                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                    displacement = bytes[2] | (bytes[3] << 8);
 
-                        if (use_segment_override) {
-                            sb_appendf(&sb, "%s:", segments[segment_override]);
-                        }
-
-                        sb_appendf(&sb, "[%s", effective_address);
-                        if (displacement != 0) {
-                            sb_appendf(&sb, " + %hd", displacement);
-                        }
-                        sb_appendf(&sb, "]");
+                    if (use_segment_override) {
+                        sb_appendf(&sb, "%s:", segments[segment_override]);
                     }
+                    sb_appendf(&sb, "[%hd]", displacement);
+                    
+                    byte_count += 2;
+
+                } else {
+                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                        u8 sign = bytes[2] & 0x80;
+                        if (sign) {
+                            displacement = 0xFF00;
+                        }
+                        displacement |= bytes[2];
+                        byte_count += 1;
+                    
+                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                        displacement = bytes[2] | (bytes[3] << 8);
+                        byte_count += 2;
+                    }                    
+                
+                    const char* effective_address = effective_address_table[rm];
+
+                    if (use_segment_override) {
+                        sb_appendf(&sb, "%s:", segments[segment_override]);
+                    }
+
+                    sb_appendf(&sb, "[%s", effective_address);
+                    if (displacement != 0) {
+                        sb_appendf(&sb, " + %hd", displacement);
+                    }
+                    sb_appendf(&sb, "]");
                 }
-            } break;
+            }
         }
         
         u16 data = 0;
