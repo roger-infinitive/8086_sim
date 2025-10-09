@@ -59,10 +59,9 @@ enum OpClass {
     OP_CLASS_REGISTER_MEMORY              = 1,
     OP_CLASS_REGISTER_MEMORY_AND_REGISTER = 2,
     OP_CLASS_IMMEDIATE                    = 3,
-    OP_CLASS_IMMEDIATE_TO_REGISTER        = 4,
-    OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 5,
-    OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 6,
-    OP_CLASS_SEG_REG                      = 7,
+    OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY = 4,
+    OP_CLASS_IMMEDIATE_TO_ACCUMULATOR     = 5,
+    OP_CLASS_SEG_REG                      = 6,
 };
 
 struct Instruction {
@@ -78,6 +77,11 @@ int instruction_count;
 Instruction instructions[4096];
 
 const char* instruction_prefix = 0;
+
+
+// CPU
+u16 registers[8]; 
+
 
 Instruction* capture_instruction(int address, const char* fmt, ...) {
     va_list ap;
@@ -118,6 +122,25 @@ Instruction* capture_jump_instruction(int address, int jump_address, const char*
     instruction->is_jump = true;
     instruction->jump_address = jump_address;
     return instruction;
+}
+
+int extract_encoded_data(u8* bytes, int current_byte, bool extract_word, bool use_signed_immediate, u16* data) {
+    if (extract_word) {
+        if (use_signed_immediate) {
+            u8 sign = bytes[current_byte] & 0x80;
+            if (sign) {
+                *data = 0xFF00;
+            }
+            *data |= bytes[current_byte];
+            return 1; 
+        }
+
+        *data = bytes[current_byte] | (bytes[current_byte + 1] << 8);
+        return 2; 
+    }
+ 
+    *data = bytes[current_byte];
+    return 1;
 }
 
 int main(int argc, char* argv[]) {
@@ -389,14 +412,20 @@ int main(int argc, char* argv[]) {
             continue;
             
         } else if ((bytes[0] & 0xF0) == 0xB0) {
-            op_text = "mov";
-            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER;
-                        
-            word = bytes[0] & 0x08;
-            extract_data = true;
-            extract_word = word != 0;
+            u16 data = 0;
+            u8 reg = bytes[0] & 0x07;
+            bool use_word = (bytes[0] & 0x08) != 0;
         
             byte_count += 1;
+            byte_count += extract_encoded_data(bytes, byte_count, use_word, false, &data);
+            
+            const char** reg_table = use_word ? register_map_word : register_map_byte; 
+            const char* reg_label = reg_table[reg];
+            const char* size_label = use_word ? "word" : "byte";
+            capture_instruction(address, "mov %s, %s %hu\n", reg_label, size_label, data);
+        
+            i += byte_count;    
+            continue;
         
         } else if ((bytes[0] & 0xFE) == 0xC2) {
             u8 no_immediate = bytes[0] & 0x01;
@@ -694,22 +723,7 @@ int main(int argc, char* argv[]) {
         
         u16 data = 0;
         if (extract_data) {
-            if (extract_word) {
-                if (use_signed_immediate) {
-                    u8 sign = bytes[byte_count] & 0x80;
-                    if (sign) {
-                        data = 0xFF00;
-                    }
-                    data |= bytes[byte_count];
-                    byte_count += 1; 
-                } else {
-                    data = bytes[byte_count] | (bytes[byte_count + 1] << 8);
-                    byte_count += 2; 
-                }
-            } else {
-                data = bytes[byte_count];
-                byte_count += 1;
-            }
+            byte_count += extract_encoded_data(bytes, byte_count, extract_word, use_signed_immediate, &data);
         }
         
         switch (op_class) {
@@ -762,17 +776,6 @@ int main(int argc, char* argv[]) {
                 continue;
             } break;
           
-            case OP_CLASS_IMMEDIATE_TO_REGISTER: {
-                const char** reg_table = word ? register_map_word : register_map_byte; 
-                const char* reg = reg_table[bytes[0] & 0x07];
-                
-                const char* size_label = extract_word ? "word" : "byte";
-                capture_instruction(address, "%s %s, %s %hu\n", op_text, reg, size_label, data);
-            
-                i += byte_count;    
-                continue;
-            } break;
-                
             case OP_CLASS_IMMEDIATE_TO_ACCUMULATOR: {
                 const char* size_label = extract_word ? "word" : "byte";
                 const char* reg = word ? "ax" : "al";
