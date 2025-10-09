@@ -41,12 +41,7 @@ const char* effective_address_table[8] = {
     "bx"
 };
 
-const char* segments[] = {
-    "es",
-    "cs",
-    "ss",
-    "ds",
-};
+const char* segments[] = { "es", "cs", "ss", "ds" };
 
 const char* group_one_mnemonics[] = {
     "add", 
@@ -659,43 +654,41 @@ int main(int argc, char* argv[]) {
             
             } else {
                 short displacement = 0;
- 
+                bool use_effective_address = true;
+                
                 if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
                     displacement = bytes[2] | (bytes[3] << 8);
-
-                    if (use_segment_override) {
-                        sb_appendf(&sb, "%s:", segments[segment_override]);
-                    }
-                    sb_appendf(&sb, "[%hd]", displacement);
-                    
+                    use_effective_address = false;
                     byte_count += 2;
-
-                } else {
-                    if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
-                        u8 sign = bytes[2] & 0x80;
-                        if (sign) {
-                            displacement = 0xFF00;
-                        }
-                        displacement |= bytes[2];
-                        byte_count += 1;
-                    
-                    } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
-                        displacement = bytes[2] | (bytes[3] << 8);
-                        byte_count += 2;
-                    }                    
+            
+                } else if (mode == MODE_MEMORY_8_BIT_DISPLACEMENT) {
+                    u8 sign = bytes[2] & 0x80;
+                    if (sign) {
+                        displacement = 0xFF00;
+                    }
+                    displacement |= bytes[2];
+                    byte_count += 1;
                 
-                    const char* effective_address = effective_address_table[rm];
-
-                    if (use_segment_override) {
-                        sb_appendf(&sb, "%s:", segments[segment_override]);
-                    }
-
-                    sb_appendf(&sb, "[%s", effective_address);
-                    if (displacement != 0) {
-                        sb_appendf(&sb, " + %hd", displacement);
-                    }
-                    sb_appendf(&sb, "]");
+                } else if (mode == MODE_MEMORY_16_BIT_DISPLACEMENT) {
+                    displacement = bytes[2] | (bytes[3] << 8);
+                    byte_count += 2;
+                }                    
+                
+                if (use_segment_override) {
+                   sb_appendf(&sb, "%s:", segments[segment_override]);
                 }
+                
+                sb_appendf(&sb, "[");
+                
+                if (use_effective_address) {
+                    sb_appendf(&sb, effective_address_table[rm]);
+                }
+                
+                if (displacement != 0) {
+                    sb_appendf(&sb, " + %hd", displacement);
+                }
+                
+                sb_appendf(&sb, "]");
             }
         }
         
