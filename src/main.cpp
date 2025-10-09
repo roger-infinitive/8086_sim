@@ -419,6 +419,23 @@ int main(int argc, char* argv[]) {
             byte_count += 1;
             byte_count += extract_encoded_data(bytes, byte_count, use_word, false, &data);
             
+            // simulate
+            if (use_word) {
+                // TODO(roger): for simulate debug
+                u8 previous_value = registers[reg];
+                
+                registers[reg] = data;
+                
+                // TODO(roger): for simulate debug
+                const char** reg_table = use_word ? register_map_word : register_map_byte; 
+                const char* reg_label = reg_table[reg];
+                printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, reg_label, previous_value, registers[reg]);
+            } else {
+                not_implemented();
+            }
+            
+            // TODO(roger): printing a decoded asm file should be a separate process from simulation
+            // print decoding
             const char** reg_table = use_word ? register_map_word : register_map_byte; 
             const char* reg_label = reg_table[reg];
             const char* size_label = use_word ? "word" : "byte";
@@ -796,6 +813,13 @@ int main(int argc, char* argv[]) {
         fputc('\n', stderr);
         ERROR_ABORT();
     }
+    
+    // TODO(roger): for simulate debug
+    printf("\nFinal registers:\n");
+    for (int i = 0; i < 8; i++) {
+        printf("      %s: 0x%04hx (%hu)\n", register_map_word[i], registers[i], registers[i]);
+    }
+    printf("\n");
     
     // Labels
     int label_counter = 0;
