@@ -10,6 +10,4 @@ test
 test.asm
 test2
 test2.asm
-*.output.asm
-*.output
-*.output_asm
+data/output/
