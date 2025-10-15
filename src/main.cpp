@@ -103,10 +103,9 @@ Instruction instructions[4096];
 
 const char* instruction_prefix = 0;
 
-
 // CPU
 u16 registers[8]; 
-
+u16 segment_registers[4];
 
 Instruction* capture_instruction(int address, const char* fmt, ...) {
     va_list ap;
@@ -795,11 +794,18 @@ int main(int argc, char* argv[]) {
         switch (op_class) {
             case OP_CLASS_SEG_REG: {
                 u8 sr = (bytes[1] >> 3) & 0x03;
-                if (dir) {
-                    capture_instruction(address, "%s %s, %s\n", op_text, segments[sr], address_operand);
-                } else {
-                    capture_instruction(address, "%s %s, %s\n", op_text, address_operand, segments[sr]);
-                }
+                const char* dest = dir ? segments[sr] : address_operand;
+                const char* source = dir ? address_operand : segments[sr];
+                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+                
+                // TODO(roger): sim
+                u16* dest_register   = dir ? &segment_registers[sr]  : &registers[reg_address];  
+                u16* source_register = dir ? &registers[reg_address] : &segment_registers[sr];  
+                u16 previous_value = *dest_register;
+                *dest_register = *source_register;
+                 
+                printf("%s %s, %s ; %s:0x%01hx->0x%01hx\n", op_text, dest, source, dest, previous_value, *dest_register);
+                            
                 i += byte_count;
                 continue;
             } break;
@@ -850,6 +856,8 @@ int main(int argc, char* argv[]) {
                     
                         u16 previous_value = registers[reg_dest];
                     
+                        // nocheckin: this does not handle 'mov ah, bl' or 'mov cl, dh' 
+                        // lo => hi or hi => lo
                         if (word) {
                             registers[reg_dest] = registers[reg_source];
                         } else if (reg_byte & 0x04) {
