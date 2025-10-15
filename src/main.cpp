@@ -3,6 +3,20 @@
 
 #include "utility.h"
 
+enum InstructionType {
+    InstructionType_Undefined = 0,
+    
+    #define INSTRUCTION(inst) InstructionType_##inst, 
+    #include "instructions.inc"
+    #undef INSTRUCTION
+};
+
+const char* instruction_strings[] {
+    #define INSTRUCTION(inst) #inst,
+    #include "instructions.inc"
+    #undef INSTRUCTION
+};
+
 #define MODE_MEMORY_NO_DISPLACEMENT     0
 #define MODE_MEMORY_8_BIT_DISPLACEMENT  1
 #define MODE_MEMORY_16_BIT_DISPLACEMENT 2
@@ -43,15 +57,15 @@ const char* effective_address_table[8] = {
 
 const char* segments[] = { "es", "cs", "ss", "ds" };
 
-const char* group_one_mnemonics[] = {
-    "add", 
-    "or",
-    "adc",
-    "sbb",
-    "and",
-    "sub",
-    "xor",
-    "cmp"
+const InstructionType group_one_mnemonics[] = {
+    InstructionType_add, 
+    InstructionType_or,
+    InstructionType_adc,
+    InstructionType_sbb,
+    InstructionType_and,
+    InstructionType_sub,
+    InstructionType_xor,
+    InstructionType_cmp
 };
 
 enum OpClass {
@@ -173,7 +187,9 @@ int main(int argc, char* argv[]) {
         bool use_lock = false;
         
         OpClass op_class = OP_CLASS_NONE;
+        // nocheckin: remove in favor of instruction_type and instruction_strings[]
         const char* op_text = 0;
+        InstructionType instruction_type = InstructionType_Undefined;
         
         if (bytes[0] == 0xF0) {
             instruction_prefix = "lock ";
@@ -225,7 +241,8 @@ int main(int argc, char* argv[]) {
                 }
                 
             } else { 
-                op_text = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
+                instruction_type = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
+                op_text = instruction_strings[instruction_type];
 
                 if (bytes[0] & 0x04) {
                     op_class = OP_CLASS_IMMEDIATE_TO_ACCUMULATOR;
@@ -281,35 +298,32 @@ int main(int argc, char* argv[]) {
             capture_jump_instruction(address, i + (char)bytes[1], op_text);
             continue;
         
-        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x82) {
+        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x83) {
             op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
             decode_register_memory = true;
             extract_data = true;
             extract_word = word != 0;
-            op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
-            use_signed_immediate = (bytes[0] & 0b00000010) != 0;
+            instruction_type = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
+            op_text = instruction_strings[instruction_type];
             
-            byte_count += 2;
-            
-        } else if (bytes[0] == 0x83) {
-            op_class = OP_CLASS_IMMEDIATE_TO_REGISTER_MEMORY;
-            decode_register_memory = true;
-            extract_data = true;
-            extract_word = word != 0;
-            op_text = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
-            use_signed_immediate = true;
+            if (bytes[0] == 0x83) {
+                use_signed_immediate = true;
+            } else {
+                use_signed_immediate = (bytes[0] & 0b00000010) != 0;
+            }
             
             byte_count += 2;
             
         } else if (bytes[0] >= 0x84 && bytes[0] <= 0x87) {
-            const char* mnemonics[] = {
-                "test",
-                "test",
-                "xchg",
-                "xchg"
+            const InstructionType mnemonics[] = {
+                InstructionType_test,
+                InstructionType_test,
+                InstructionType_xchg,
+                InstructionType_xchg
             };
             
-            op_text = mnemonics[(bytes[0] & 0x0F) - 0x04];
+            instruction_type = mnemonics[(bytes[0] & 0x0F) - 0x04];
+            op_text = instruction_strings[instruction_type];
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
             decode_register_memory = true;
             
@@ -324,7 +338,8 @@ int main(int argc, char* argv[]) {
         } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
             decode_register_memory = true;
-            op_text = "mov";
+            instruction_type = InstructionType_mov;
+            op_text = instruction_strings[instruction_type];
             byte_count += 2;
             
         } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
@@ -336,7 +351,8 @@ int main(int argc, char* argv[]) {
         } else if (bytes[0] == 0x8D) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
             decode_register_memory = true;
-            op_text = "lea";
+            instruction_type = InstructionType_lea;
+            op_text = instruction_strings[instruction_type];
             dir = 1;
             byte_count += 2;
         
@@ -470,7 +486,8 @@ int main(int argc, char* argv[]) {
         } else if ((bytes[0] & 0xFE) == 0xC4) {
             op_class = OP_CLASS_REGISTER_MEMORY_AND_REGISTER;
             decode_register_memory = true;
-            op_text = (bytes[0] & 0x01) ? "lds" : "les";
+            instruction_type = (bytes[0] & 0x01) ? InstructionType_lds : InstructionType_les;
+            op_text = instruction_strings[instruction_type];
             word = 1;
             dir = 1;
             byte_count += 2;
@@ -782,12 +799,23 @@ int main(int argc, char* argv[]) {
             case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
                 u8 reg = (bytes[1] & 0x38) >> 3; 
                 
+                // TODO(roger): sim  
+                switch (instruction_type) {
+                    case InstructionType_mov: {
+                        printf("this is a REGISTER_MEMORY_AND_REGISTER mov\n");
+                    } break;
+                    
+                    // nocheckin
+                    //default: not_implemented();
+                }
+                
+                // TODO(roger): decoder
                 const char** reg_table = word ? register_map_word : register_map_byte; 
                 const char* reg_operand = reg_table[reg];
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
-                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+                capture_instruction(address, "%s %s, %s\n", instruction_strings[instruction_type], dest, source);
     
                 i += byte_count;
                 continue;
