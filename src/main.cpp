@@ -356,6 +356,8 @@ int main(int argc, char* argv[]) {
         } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
             op_class = OP_CLASS_SEG_REG;
             decode_register_memory = true;
+            dir = bytes[0] & 0x02;
+            word = 1;
             op_text = "mov";
             byte_count += 2;
         
@@ -793,7 +795,11 @@ int main(int argc, char* argv[]) {
         switch (op_class) {
             case OP_CLASS_SEG_REG: {
                 u8 sr = (bytes[1] >> 3) & 0x03;
-                capture_instruction(address, "%s %s, %s\n", op_text, address_operand, segments[sr]);
+                if (dir) {
+                    capture_instruction(address, "%s %s, %s\n", op_text, segments[sr], address_operand);
+                } else {
+                    capture_instruction(address, "%s %s, %s\n", op_text, address_operand, segments[sr]);
+                }
                 i += byte_count;
                 continue;
             } break;
