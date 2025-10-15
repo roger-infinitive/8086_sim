@@ -22,6 +22,17 @@ const char* instruction_strings[] {
 #define MODE_MEMORY_16_BIT_DISPLACEMENT 2
 #define MODE_REGISTER                   3
 
+enum Register {
+    Register_A,
+    Register_C,
+    Register_D,
+    Register_B,
+    Register_SP,
+    Register_BP,
+    Register_SI,
+    Register_DI,
+};
+
 const char* register_map_byte[8] = { 
     "al", 
     "cl", 
@@ -435,12 +446,14 @@ int main(int argc, char* argv[]) {
             byte_count += 1;
             byte_count += extract_encoded_data(bytes, byte_count, use_word, false, &data);
 
+            // nocheckin: somewhat duplicate.
             // simulate
 
             // TODO(roger): for simulate debug
             u8 previous_value = registers[reg];
+            
+            // nocheckin: use Register enum
             int reg_index = 0;
-                        
             if (use_word) {
                 reg_index = reg;
                 registers[reg] = data;
@@ -712,6 +725,8 @@ int main(int argc, char* argv[]) {
             byte_count += 2;
         }
 
+        // nocheckin: not fully implemented.
+        Register reg_address;  
         char address_operand[32];
         memset(address_operand, 0, 32);
 
@@ -722,6 +737,13 @@ int main(int argc, char* argv[]) {
             if (mode == MODE_REGISTER) {
                 const char** reg_table = word ? register_map_word : register_map_byte;
                 sb_appendf(&sb, reg_table[rm]); 
+                
+                int reg_index = rm;
+                if (!word) {
+                    reg_index = rm & 0x03;
+                }
+                
+                reg_address = (Register)reg_index;
             
             } else {
                 short displacement = 0;
@@ -797,12 +819,33 @@ int main(int argc, char* argv[]) {
             } break;
                 
             case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
-                u8 reg = (bytes[1] & 0x38) >> 3; 
+                u8 reg_byte = (bytes[1] & 0x38) >> 3; 
                 
+                int reg_index = reg_byte;
+                if (!word) {
+                    reg_index = reg_index & 0x03;
+                }
+                Register reg = (Register)reg_index;
+                
+                Register reg_dest = dir ? reg : reg_address;
+                Register reg_source = dir ? reg_address : reg;
+
                 // TODO(roger): sim  
                 switch (instruction_type) {
                     case InstructionType_mov: {
+                    
+                        if (word) {
+                            registers[reg_dest] = registers[reg_source];
+                        } else if (reg_byte & 0x04) {
+                            // Set high bits of register.
+                            registers[reg_dest] = (registers[reg_source] << 8) | (registers[reg_dest] & 0x00FF);
+                        } else {
+                            // Set low bits of register.
+                            registers[reg_dest] = registers[reg_source] | (registers[reg_dest] & 0xFF00);
+                        }
+                    
                         printf("this is a REGISTER_MEMORY_AND_REGISTER mov\n");
+                    
                     } break;
                     
                     // nocheckin
@@ -811,7 +854,7 @@ int main(int argc, char* argv[]) {
                 
                 // TODO(roger): decoder
                 const char** reg_table = word ? register_map_word : register_map_byte; 
-                const char* reg_operand = reg_table[reg];
+                const char* reg_operand = reg_table[reg_byte];
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
