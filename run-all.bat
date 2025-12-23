@@ -15,17 +15,21 @@ for /r "data" %%F in (*.asm) do (
   rem Base name without extension
   set "base=!outdir!%%~nF"
 
-  echo Processing: "%%F"
+  echo Assembling source: "%%F"
   nasm "%%F" -o "!base!"
 
+  echo Decoding...
   8086_decoder "!base!" > "!base!_decoded.output_asm"
+  echo Assembling decoded output: "!base!_decoded.output_asm" 
   nasm "!base!_decoded.output_asm" -o "!base!_decoded"
 
   rem Binary compare
   fc /b "!base!_decoded" "!base!" >nul
   if errorlevel 1 (
-    echo !RED!DIFF detected in "%%~F"!RESET!
+    powershell -Command "Write-Host 'DIFF detected in "%%~F"' -ForegroundColor Red"
     exit /b 1
+  ) else (
+      powershell -Command "Write-Host 'PASSED: "%%~F"' -ForegroundColor Green"
   )
 )
 

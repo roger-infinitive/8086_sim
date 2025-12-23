@@ -12,6 +12,8 @@ enum InstructionType {
 };
 
 const char* instruction_strings[] {
+    "undefined",
+
     #define INSTRUCTION(inst) #inst,
     #include "instructions.inc"
     #undef INSTRUCTION
@@ -167,16 +169,41 @@ int extract_encoded_data(u8* bytes, int current_byte, bool extract_word, bool us
     return 1;
 }
 
-int main(int argc, char* argv[]) {
+struct ProgramState {
+    bool exec_enabled;
+    const char* binary_file_path;
+};
+
+bool parse_args(int argc, char* argv[], ProgramState* state) {
     if (argc < 2) {
-        printf("Usage: %s <filename>\n", argv[0]);
+        printf("Usage: %s [-exec] <filename>\n", argv[0]);
+        return false;
+    }
+    
+    state->exec_enabled = false;
+    state->binary_file_path = argv[argc-1];
+    
+    for (int i = 1; i < argc-1; i++) {
+        if (argv[i][0] == '-') {
+            if (strcmp(&argv[i][0], "exec") == 0) {
+                state->exec_enabled = true;
+            }
+        }
+    }
+    
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    ProgramState program_state = {};
+    if (!parse_args(argc, argv, &program_state)) {
         return 1;
     }
 
     init_arena(&main_arena, 32*1024*1024);
     
     MemoryBuffer file = {};
-    if (!read_entire_file(&file, argv[1], main_arena_alloc)) {
+    if (!read_entire_file(&file, program_state.binary_file_path, main_arena_alloc)) {
         return 1;
     }
     
@@ -447,37 +474,37 @@ int main(int argc, char* argv[]) {
             byte_count += 1;
             byte_count += extract_encoded_data(bytes, byte_count, use_word, false, &data);
 
+            const char** reg_table = use_word ? register_map_word : register_map_byte; 
+            const char* reg_label = reg_table[reg];
+
             // nocheckin: somewhat duplicate.
             // simulate
 
-            // TODO(roger): for simulate debug
-            u16 previous_value = registers[reg];
-            
-            // nocheckin: use Register enum
-            int reg_index = 0;
-            if (use_word) {
-                reg_index = reg;
-                registers[reg] = data;
-            } else {
-                reg_index = reg & 0x03;
-                if (reg & 0x04) {
-                    // Set high bits of register.
-                    registers[reg_index] = (data << 8) | (registers[reg_index] & 0x00FF);
+            if (program_state.exec_enabled) {
+                u16 previous_value = registers[reg];
+                
+                // nocheckin: use Register enum
+                int reg_index = 0;
+                if (use_word) {
+                    reg_index = reg;
+                    registers[reg] = data;
                 } else {
-                    // Set low bits of register.
-                    registers[reg_index] = data | (registers[reg_index] & 0xFF00);
+                    reg_index = reg & 0x03;
+                    if (reg & 0x04) {
+                        // Set high bits of register.
+                        registers[reg_index] = (data << 8) | (registers[reg_index] & 0x00FF);
+                    } else {
+                        // Set low bits of register.
+                        registers[reg_index] = data | (registers[reg_index] & 0xFF00);
+                    }
                 }
+                        
+                printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, register_map_word[reg_index], previous_value, registers[reg_index]);
+                
+            } else {
+                const char* size_label = use_word ? "word" : "byte";
+                capture_instruction(address, "mov %s, %s %hu\n", reg_label, size_label, data);
             }
-            
-            // TODO(roger): for simulate debug
-            const char** reg_table = use_word ? register_map_word : register_map_byte; 
-            const char* reg_label = reg_table[reg];
-            printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, register_map_word[reg_index], previous_value, registers[reg_index]);
-
-            // TODO(roger): printing a decoded asm file should be a separate process from simulation
-            // print decoding
-            const char* size_label = use_word ? "word" : "byte";
-            capture_instruction(address, "mov %s, %s %hu\n", reg_label, size_label, data);
         
             i += byte_count;    
             continue;
@@ -796,16 +823,20 @@ int main(int argc, char* argv[]) {
                 u8 sr = (bytes[1] >> 3) & 0x03;
                 const char* dest = dir ? segments[sr] : address_operand;
                 const char* source = dir ? address_operand : segments[sr];
-                capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
-                
-                // TODO(roger): sim
-                u16* dest_register   = dir ? &segment_registers[sr]  : &registers[reg_address];  
-                u16* source_register = dir ? &registers[reg_address] : &segment_registers[sr];  
-                u16 previous_value = *dest_register;
-                *dest_register = *source_register;
-                 
-                printf("%s %s, %s ; %s:0x%01hx->0x%01hx\n", op_text, dest, source, dest, previous_value, *dest_register);
-                            
+
+                // nocheckin: simulate
+                                
+                if (program_state.exec_enabled) {
+                    u16* dest_register   = dir ? &segment_registers[sr]  : &registers[reg_address];  
+                    u16* source_register = dir ? &registers[reg_address] : &segment_registers[sr];  
+                    u16 previous_value = *dest_register;
+                    *dest_register = *source_register;
+                     
+                    printf("%s %s, %s ; %s:0x%01hx->0x%01hx\n", op_text, dest, source, dest, previous_value, *dest_register);
+                } else {
+                    capture_instruction(address, "%s %s, %s\n", op_text, dest, source);
+                }
+                    
                 i += byte_count;
                 continue;
             } break;
@@ -833,49 +864,50 @@ int main(int argc, char* argv[]) {
             case OP_CLASS_REGISTER_MEMORY_AND_REGISTER: {
                 u8 reg_byte = (bytes[1] & 0x38) >> 3; 
                 
-                // TODO(roger): decoder
                 const char** reg_table = word ? register_map_word : register_map_byte; 
                 const char* reg_operand = reg_table[reg_byte];
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
-                capture_instruction(address, "%s %s, %s\n", instruction_strings[instruction_type], dest, source);
-                
-                // TODO(roger): sim  
-                int reg_index = reg_byte;
-                if (!word) {
-                    reg_index = reg_index & 0x03;
-                }
-                Register reg = (Register)reg_index;
-                
-                Register reg_dest = dir ? reg : reg_address;
-                Register reg_source = dir ? reg_address : reg;
-
-                switch (instruction_type) {
-                    case InstructionType_mov: {
+                // nocheckin: simulate 
+                if (program_state.exec_enabled) {
+                    int reg_index = reg_byte;
+                    if (!word) {
+                        reg_index = reg_index & 0x03;
+                    }
+                    Register reg = (Register)reg_index;
                     
-                        u16 previous_value = registers[reg_dest];
-                    
-                        // nocheckin: this does not handle 'mov ah, bl' or 'mov cl, dh' 
-                        // lo => hi or hi => lo
-                        if (word) {
-                            registers[reg_dest] = registers[reg_source];
-                        } else if (reg_byte & 0x04) {
-                            // Set high bits of register.
-                            registers[reg_dest] = (registers[reg_source] << 8) | (registers[reg_dest] & 0x00FF);
-                        } else {
-                            // Set low bits of register.
-                            registers[reg_dest] = registers[reg_source] | (registers[reg_dest] & 0xFF00);
-                        }
-                    
-                        printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[reg_dest], previous_value, registers[reg_dest]);
-                    
-                    } break;
-                    
-                    // nocheckin
-                    //default: not_implemented();
-                }
+                    Register reg_dest = dir ? reg : reg_address;
+                    Register reg_source = dir ? reg_address : reg;
     
+                    switch (instruction_type) {
+                        case InstructionType_mov: {
+                        
+                            u16 previous_value = registers[reg_dest];
+                        
+                            // nocheckin: this does not handle 'mov ah, bl' or 'mov cl, dh' 
+                            // partial register movs: lo => hi or hi => lo
+                            if (word) {
+                                registers[reg_dest] = registers[reg_source];
+                            } else if (reg_byte & 0x04) {
+                                // Set high bits of register.
+                                registers[reg_dest] = (registers[reg_source] << 8) | (registers[reg_dest] & 0x00FF);
+                            } else {
+                                // Set low bits of register.
+                                registers[reg_dest] = registers[reg_source] | (registers[reg_dest] & 0xFF00);
+                            }
+                        
+                            printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[reg_dest], previous_value, registers[reg_dest]);
+                        
+                        } break;
+                        
+                        // nocheckin
+                        //default: not_implemented();
+                    }
+                } else {
+                    capture_instruction(address, "%s %s, %s\n", instruction_strings[instruction_type], dest, source);
+                }
+                
                 i += byte_count;
                 continue;
             } break;
@@ -909,12 +941,13 @@ int main(int argc, char* argv[]) {
         ERROR_ABORT();
     }
     
-    // TODO(roger): for simulate debug
-    printf("\nFinal registers:\n");
-    for (int i = 0; i < 8; i++) {
-        printf("      %s: 0x%04hx (%hu)\n", register_map_word[i], registers[i], registers[i]);
+    if (program_state.exec_enabled) {
+        printf("\nFinal registers:\n");
+        for (int i = 0; i < 8; i++) {
+            printf("      %s: 0x%04hx (%hu)\n", register_map_word[i], registers[i], registers[i]);
+        }
+        printf("\n");
     }
-    printf("\n");
     
     // Labels
     int label_counter = 0;
@@ -926,8 +959,6 @@ int main(int argc, char* argv[]) {
             continue;
         }
     
-        instructions[i].jump_address;
-
         bool found = false;
         for (int j = 0; j < label_counter; j++) {
             if (label_addresses[j] == instructions[i].jump_address) {
