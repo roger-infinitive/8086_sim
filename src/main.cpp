@@ -490,47 +490,18 @@ int main(int argc, char* argv[]) {
             goto finish_instruction;
             
         } else if ((bytes[0] & 0xF0) == 0xB0) {
-            u16 data = 0;
-            u8 reg = bytes[0] & 0x07;
+            decoded.type = InstructionType_mov;
+            decoded.op_encoding = OP_ENCODING_IMM_RM; 
+            decoded.rm_encoding = bytes[0] & 0x07; 
             decoded.word = (bytes[0] & 0x08) != 0;
+            
+            extract_data = true;
+            extract_word = decoded.word; 
+            
+            decode_register_memory = true;
+            mode = MODE_REGISTER;
         
             byte_count += 1;
-            byte_count += extract_encoded_data(bytes, byte_count, decoded.word, false, &data);
-
-            const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
-            const char* reg_label = reg_table[reg];
-
-            // nocheckin: somewhat duplicate.
-            // simulate
-
-            if (program_state.exec_enabled) {
-                u16 previous_value = registers[reg];
-                
-                // nocheckin: use Register enum
-                int reg_index = 0;
-                if (decoded.word) {
-                    reg_index = reg;
-                    registers[reg] = data;
-                } else {
-                    reg_index = reg & 0x03;
-                    if (reg & 0x04) {
-                        // Set high bits of register.
-                        registers[reg_index] = (data << 8) | (registers[reg_index] & 0x00FF);
-                    } else {
-                        // Set low bits of register.
-                        registers[reg_index] = data | (registers[reg_index] & 0xFF00);
-                    }
-                }
-                        
-                printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, register_map_word[reg_index], previous_value, registers[reg_index]);
-                
-            } else {
-                const char* size_label = decoded.word ? "word" : "byte";
-                capture_instruction(address, "mov %s, %s %hu\n", reg_label, size_label, data);
-            }
-        
-            i += byte_count;    
-            goto finish_instruction;
         
         } else if ((bytes[0] & 0xFE) == 0xC2) {
             u8 no_immediate = bytes[0] & 0x01;
@@ -957,6 +928,26 @@ int main(int argc, char* argv[]) {
                         // nocheckin
                         //default: not_implemented();
                     }
+                } break;
+                
+                case OP_ENCODING_IMM_RM: {
+                    Register reg = (Register)(decoded.rm_encoding & 0x03);
+                    u16 previous_value = registers[reg];
+                    
+                    if (decoded.word) {
+                        registers[reg] = data;
+                    } else if (decoded.rm_encoding <= 3) {
+                        // Set high bits of register.
+                        registers[reg] = (data << 8) | (registers[reg] & 0x00FF);
+                    } else {
+                        // Set low bits of register.
+                        registers[reg] = data | (registers[reg] & 0xFF00);
+                    }
+                    
+                    const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                    const char* reg_label = reg_table[reg];
+                    
+                    printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, register_map_word[reg], previous_value, registers[reg]);
                 } break;
             }
         } else {
