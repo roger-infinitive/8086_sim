@@ -120,10 +120,11 @@ struct DecodedInstruction {
     OpEncoding op_encoding;
     bool word;
     bool use_segment_override;
+    u8 reg_encoding;
     // nocheckin: when decoding we seem to pull the segment_register out from the same bits?
     SegmentRegister segment_register;
-    
     // register_memory decode
+    u8 rm;
     Register rm_register;
 };
 
@@ -280,7 +281,7 @@ int main(int argc, char* argv[]) {
         
         decoded.word = (bytes[0] & 0x01) != 0;
         u8 mode = bytes[1] >> 6;
-        u8 rm   = bytes[1] & 0x07;
+        decoded.rm   = bytes[1] & 0x07;
         u8 dir  = bytes[0] & 0x02;
         
         if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
@@ -778,11 +779,11 @@ int main(int argc, char* argv[]) {
         if (decode_register_memory) {
             if (mode == MODE_REGISTER) {
                 const char** reg_table = decoded.word ? register_map_word : register_map_byte;
-                sb_appendf(&address_operand_sb, reg_table[rm]); 
+                sb_appendf(&address_operand_sb, reg_table[decoded.rm]); 
                 
-                int reg_index = rm;
+                int reg_index = decoded.rm;
                 if (!decoded.word) {
-                    reg_index = rm & 0x03;
+                    reg_index = decoded.rm & 0x03;
                 }
                 
                 decoded.rm_register = (Register)reg_index;
@@ -791,7 +792,7 @@ int main(int argc, char* argv[]) {
                 short displacement = 0;
                 bool use_effective_address = true;
                 
-                if (mode == MODE_MEMORY_NO_DISPLACEMENT && rm == 6) {
+                if (mode == MODE_MEMORY_NO_DISPLACEMENT && decoded.rm == 6) {
                     displacement = bytes[2] | (bytes[3] << 8);
                     use_effective_address = false;
                     byte_count += 2;
@@ -816,7 +817,7 @@ int main(int argc, char* argv[]) {
                 sb_appendf(&address_operand_sb, "[");
                 
                 if (use_effective_address) {
-                    sb_appendf(&address_operand_sb, effective_address_table[rm]);
+                    sb_appendf(&address_operand_sb, effective_address_table[decoded.rm]);
                 }
                 
                 if (displacement != 0) {
@@ -860,44 +861,43 @@ int main(int argc, char* argv[]) {
             } break;
                 
             case OP_ENCODING_RM_R: {
-                u8 reg_byte = (bytes[1] & 0x38) >> 3; 
-                
+                decoded.reg_encoding = (bytes[1] & 0x38) >> 3;
+            
                 const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
-                const char* reg_operand = reg_table[reg_byte];
+                const char* reg_operand = reg_table[decoded.reg_encoding];
                 const char* dest   = dir ? reg_operand : address_operand;
                 const char* source = dir ? address_operand : reg_operand;
                 
                 // nocheckin: simulate 
                 if (program_state.exec_enabled) {
-                    int reg_index = reg_byte;
-                    if (!decoded.word) {
-                        reg_index = reg_index & 0x03;
-                    }
-                    Register reg = (Register)reg_index;
-                    
-                    // nocheckin: rm_register is wrong of course here because we could be using an effective address calculation instead.
-                    Register reg_dest = dir ? reg : decoded.rm_register;
-                    Register reg_source = dir ? decoded.rm_register : reg;
-    
+                    u8 dest_encoding = dir ? decoded.reg_encoding : decoded.rm;
+                    u8 src_encoding  = dir ? decoded.rm : decoded.reg_encoding;
+
+                    Register dest_reg = (Register)(dest_encoding & 0x03);
+                    Register src_reg = (Register)(src_encoding & 0x03);
+
                     switch (decoded.type) {
                         case InstructionType_mov: {
+                            u16 previous_value = registers[dest_reg];
                         
-                            u16 previous_value = registers[reg_dest];
-                        
-                            // nocheckin: this does not handle 'mov ah, bl' or 'mov cl, dh' 
-                            // partial register movs: lo => hi or hi => lo
                             if (decoded.word) {
-                                registers[reg_dest] = registers[reg_source];
-                            } else if (reg_byte & 0x04) {
-                                // Set high bits of register.
-                                registers[reg_dest] = (registers[reg_source] << 8) | (registers[reg_dest] & 0x00FF);
+                                registers[dest_reg] = registers[src_reg];
                             } else {
-                                // Set low bits of register.
-                                registers[reg_dest] = registers[reg_source] | (registers[reg_dest] & 0xFF00);
+                                u16 src_value = 0;
+                                if (src_encoding <= 3) {
+                                    src_value = registers[src_reg] & 0x00FF;
+                                } else {
+                                    src_value = registers[src_reg] >> 8;
+                                }
+                                
+                                if (dest_encoding <= 3) {
+                                    registers[dest_reg] = src_value | (registers[dest_reg] & 0xFF00); 
+                                } else {
+                                    registers[dest_reg] = (src_value << 8) | (registers[dest_reg] & 0x00FF); 
+                                }
                             }
                         
-                            printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[reg_dest], previous_value, registers[reg_dest]);
-                        
+                            printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[dest_reg], previous_value, registers[dest_reg]);
                         } break;
                         
                         // nocheckin
