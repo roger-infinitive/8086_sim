@@ -853,52 +853,7 @@ int main(int argc, char* argv[]) {
             } break;
                 
             case OP_ENCODING_RM_R: {
-                decoded.reg_encoding = (bytes[1] & 0x38) >> 3;
-            
-                const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
-                const char* reg_operand = reg_table[decoded.reg_encoding];
-                const char* dest   = dir ? reg_operand : address_operand;
-                const char* source = dir ? address_operand : reg_operand;
-                
-                // nocheckin: simulate 
-                if (program_state.exec_enabled) {
-                    u8 dest_encoding = dir ? decoded.reg_encoding : decoded.rm_encoding;
-                    u8 src_encoding  = dir ? decoded.rm_encoding : decoded.reg_encoding;
-
-                    Register dest_reg = (Register)(dest_encoding & 0x03);
-                    Register src_reg = (Register)(src_encoding & 0x03);
-
-                    switch (decoded.type) {
-                        case InstructionType_mov: {
-                            u16 previous_value = registers[dest_reg];
-                        
-                            if (decoded.word) {
-                                registers[dest_reg] = registers[src_reg];
-                            } else {
-                                u16 src_value = 0;
-                                if (src_encoding <= 3) {
-                                    src_value = registers[src_reg] & 0x00FF;
-                                } else {
-                                    src_value = registers[src_reg] >> 8;
-                                }
-                                
-                                if (dest_encoding <= 3) {
-                                    registers[dest_reg] = src_value | (registers[dest_reg] & 0xFF00); 
-                                } else {
-                                    registers[dest_reg] = (src_value << 8) | (registers[dest_reg] & 0x00FF); 
-                                }
-                            }
-                        
-                            printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[dest_reg], previous_value, registers[dest_reg]);
-                        } break;
-                        
-                        // nocheckin
-                        //default: not_implemented();
-                    }
-                } else {
-                    capture_instruction(address, "%s %s, %s\n", instruction_strings[decoded.type], dest, source);
-                }
-                
+                decoded.reg_encoding = (bytes[1] & 0x38) >> 3;                
                 i += byte_count;
                 goto finish_instruction;
             } break;
@@ -961,16 +916,67 @@ int main(int argc, char* argv[]) {
 
                     printf("%s %s, %s ; %s:0x%01hx->0x%01hx\n", instruction_strings[decoded.type], dest, source, dest, previous_value, *dest_register);
                 } break;
+                
+                case OP_ENCODING_RM_R: {
+                    u8 dest_encoding = dir ? decoded.reg_encoding : decoded.rm_encoding;
+                    u8 src_encoding  = dir ? decoded.rm_encoding : decoded.reg_encoding;
+
+                    Register dest_reg = (Register)(dest_encoding & 0x03);
+                    Register src_reg = (Register)(src_encoding & 0x03);
+
+                    switch (decoded.type) {
+                        case InstructionType_mov: {
+                            u16 previous_value = registers[dest_reg];
+                        
+                            if (decoded.word) {
+                                registers[dest_reg] = registers[src_reg];
+                            } else {
+                                u16 src_value = 0;
+                                if (src_encoding <= 3) {
+                                    src_value = registers[src_reg] & 0x00FF;
+                                } else {
+                                    src_value = registers[src_reg] >> 8;
+                                }
+                                
+                                if (dest_encoding <= 3) {
+                                    registers[dest_reg] = src_value | (registers[dest_reg] & 0xFF00); 
+                                } else {
+                                    registers[dest_reg] = (src_value << 8) | (registers[dest_reg] & 0x00FF); 
+                                }
+                            }
+                        
+                            const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                            const char* reg_operand = reg_table[decoded.reg_encoding];
+                            const char* rm_operand = reg_table[decoded.rm_encoding];
+                            const char* dest = dir ? reg_operand : rm_operand;
+                            const char* source = dir ? rm_operand : reg_operand;
+                                    
+                            printf("mov %s, %s ; %s:0x%01hx->0x%01hx\n", dest, source, register_map_word[dest_reg], previous_value, registers[dest_reg]);
+                        } break;
+                        
+                        // nocheckin
+                        //default: not_implemented();
+                    }
+                } break;
             }
         } else {
+            // nocheckin: right now we do not capture the effective address in the decoded instruction, so we have to use the crappy address_operand string.
             switch (decoded.op_encoding) {
                 case OP_ENCODING_SEG: {
                     const char* sr_string = segment_register_strings[decoded.segment_register];
                     const char** reg_table = decoded.word ? register_map_word : register_map_byte;
-                    // nocheckin: right now we do not capture the effective address in the decoded instruction, so we have to use the crappy address_operand string.
                     const char* reg_string = address_operand;
                     const char* dest = dir ? sr_string : reg_string;
                     const char* source = dir ? reg_string : sr_string;
+                    
+                    capture_instruction(address, "%s %s, %s\n", instruction_strings[decoded.type], dest, source);
+                } break;
+                
+                case OP_ENCODING_RM_R: {
+                    const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                    const char* reg_operand = reg_table[decoded.reg_encoding];
+                    const char* dest   = dir ? reg_operand : address_operand;
+                    const char* source = dir ? address_operand : reg_operand;
                     
                     capture_instruction(address, "%s %s, %s\n", instruction_strings[decoded.type], dest, source);
                 } break;
