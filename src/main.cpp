@@ -124,8 +124,7 @@ struct DecodedInstruction {
     // nocheckin: when decoding we seem to pull the segment_register out from the same bits?
     SegmentRegister segment_register;
     // register_memory decode
-    u8 rm;
-    Register rm_register;
+    u8 rm_encoding;
 };
 
 char instruction_buffer[64];
@@ -281,7 +280,7 @@ int main(int argc, char* argv[]) {
         
         decoded.word = (bytes[0] & 0x01) != 0;
         u8 mode = bytes[1] >> 6;
-        decoded.rm   = bytes[1] & 0x07;
+        decoded.rm_encoding   = bytes[1] & 0x07;
         u8 dir  = bytes[0] & 0x02;
         
         if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
@@ -776,23 +775,16 @@ int main(int argc, char* argv[]) {
             byte_count += 2;
         }
         
+        // nocheckin
         if (decode_register_memory) {
             if (mode == MODE_REGISTER) {
                 const char** reg_table = decoded.word ? register_map_word : register_map_byte;
-                sb_appendf(&address_operand_sb, reg_table[decoded.rm]); 
-                
-                int reg_index = decoded.rm;
-                if (!decoded.word) {
-                    reg_index = decoded.rm & 0x03;
-                }
-                
-                decoded.rm_register = (Register)reg_index;
-            
+                sb_appendf(&address_operand_sb, reg_table[decoded.rm_encoding]); 
             } else {
                 short displacement = 0;
                 bool use_effective_address = true;
                 
-                if (mode == MODE_MEMORY_NO_DISPLACEMENT && decoded.rm == 6) {
+                if (mode == MODE_MEMORY_NO_DISPLACEMENT && decoded.rm_encoding == 6) {
                     displacement = bytes[2] | (bytes[3] << 8);
                     use_effective_address = false;
                     byte_count += 2;
@@ -817,7 +809,7 @@ int main(int argc, char* argv[]) {
                 sb_appendf(&address_operand_sb, "[");
                 
                 if (use_effective_address) {
-                    sb_appendf(&address_operand_sb, effective_address_table[decoded.rm]);
+                    sb_appendf(&address_operand_sb, effective_address_table[decoded.rm_encoding]);
                 }
                 
                 if (displacement != 0) {
@@ -870,8 +862,8 @@ int main(int argc, char* argv[]) {
                 
                 // nocheckin: simulate 
                 if (program_state.exec_enabled) {
-                    u8 dest_encoding = dir ? decoded.reg_encoding : decoded.rm;
-                    u8 src_encoding  = dir ? decoded.rm : decoded.reg_encoding;
+                    u8 dest_encoding = dir ? decoded.reg_encoding : decoded.rm_encoding;
+                    u8 src_encoding  = dir ? decoded.rm_encoding : decoded.reg_encoding;
 
                     Register dest_reg = (Register)(dest_encoding & 0x03);
                     Register src_reg = (Register)(src_encoding & 0x03);
@@ -948,11 +940,13 @@ int main(int argc, char* argv[]) {
                     u16* dest_register;
                     u16* src_register;
                     
+                    Register rm_reg = (Register)(decoded.rm_encoding & 0x03);
+                    
                     if (dir) {
                         dest_register = &segment_registers[decoded.segment_register]; 
-                        src_register = &registers[decoded.rm_register]; 
+                        src_register = &registers[rm_reg]; 
                     } else {
-                        dest_register = &registers[decoded.rm_register];
+                        dest_register = &registers[rm_reg];
                         src_register = &segment_registers[decoded.segment_register]; 
                     }
                     
@@ -961,7 +955,7 @@ int main(int argc, char* argv[]) {
 
                     const char* sr_string = segment_register_strings[decoded.segment_register];
                     const char** reg_table = decoded.word ? register_map_word : register_map_byte;
-                    const char* reg_string = reg_table[decoded.rm_register];
+                    const char* reg_string = reg_table[decoded.rm_encoding];
                     const char* dest = dir ? sr_string : reg_string;
                     const char* source = dir ? reg_string : sr_string;
 
@@ -973,7 +967,8 @@ int main(int argc, char* argv[]) {
                 case OP_ENCODING_SEG: {
                     const char* sr_string = segment_register_strings[decoded.segment_register];
                     const char** reg_table = decoded.word ? register_map_word : register_map_byte;
-                    const char* reg_string = reg_table[decoded.rm_register];
+                    // nocheckin: right now we do not capture the effective address in the decoded instruction, so we have to use the crappy address_operand string.
+                    const char* reg_string = address_operand;
                     const char* dest = dir ? sr_string : reg_string;
                     const char* source = dir ? reg_string : sr_string;
                     
