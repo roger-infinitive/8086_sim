@@ -99,6 +99,27 @@ const InstructionType group_one_mnemonics[] = {
     InstructionType_cmp
 };
 
+const InstructionType group_two_mnemonics[] = {
+    InstructionType_test,
+    InstructionType_Undefined,
+    InstructionType_not,
+    InstructionType_neg,
+    InstructionType_mul,
+    InstructionType_imul,
+    InstructionType_div,
+    InstructionType_idiv,
+};
+
+const InstructionType group_three_mnemonics[] = {
+    InstructionType_inc,
+    InstructionType_dec,
+    InstructionType_call,
+    InstructionType_call_far,
+    InstructionType_jmp,
+    InstructionType_jmp_far,
+    InstructionType_push
+};
+
 enum OpEncoding {
     OP_ENCODING_NONE    = 0,
     OP_ENCODING_RM      = 1,
@@ -127,6 +148,7 @@ enum InstFlags : u32{
     InstFlags_DecodeMnemonic       = 1 << 6,
     InstFlags_UseSegmentOverride   = 1 << 7,
     InstFlags_DirBit               = 1 << 8,
+    InstFlags_ExtractMode          = 1 << 9,
 };
 
 // nocheckin: instead of booleans use flags
@@ -137,6 +159,7 @@ struct DecodedInstruction {
     OpEncoding op_encoding;
     u8 reg_encoding;
     SegmentRegister segment_register;
+    int rm_encoding_decode_byte;
     u8 rm_encoding;
     Mode mode;
     
@@ -248,28 +271,44 @@ DecodedInstruction decoded_table[256];
 void InitializeDecodedInstructionTable() { 
     // nocheckin:
     
-    DecodedInstruction* inst = &decoded_table[0x00];
-    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory);
-    inst->type = InstructionType_add;
-    inst->op_encoding = OP_ENCODING_RM_R;
-    inst->byte_offset = 2;
+    int start_offset = 0x00; 
+    for (int i = 0; i < countOf(group_one_mnemonics); i++) {
+        DecodedInstruction* inst = &decoded_table[start_offset];
+        inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractMode);
+        inst->type = group_one_mnemonics[i];
+        inst->op_encoding = OP_ENCODING_RM_R;
+        inst->rm_encoding_decode_byte = 1;
+        inst->byte_offset = 2;
+        
+        decoded_table[start_offset + 1] = decoded_table[start_offset];
+        decoded_table[start_offset + 1].flags |= InstFlags_RegisterWord;
+        
+        decoded_table[start_offset + 2] = decoded_table[start_offset];
+        decoded_table[start_offset + 2].flags |= InstFlags_DirBit;
+        
+        decoded_table[start_offset + 3] = decoded_table[start_offset + 2];
+        decoded_table[start_offset + 3].flags |= InstFlags_RegisterWord;
+        
+        inst = &decoded_table[start_offset + 4];
+        inst->flags |= (InstFlags_Valid | InstFlags_ExtractData);
+        inst->type = group_one_mnemonics[i];
+        inst->op_encoding = OP_ENCODING_IMM_ACC;
+        inst->byte_offset = 1;
+        
+        decoded_table[start_offset + 5] = decoded_table[start_offset + 4];
+        decoded_table[start_offset + 5].flags |= (InstFlags_RegisterWord | InstFlags_ExtractWord); 
+        
+        start_offset += 0x08;
+    }
     
-    decoded_table[0x01] = decoded_table[0x00];
-    decoded_table[0x01].flags |= InstFlags_RegisterWord;
-    
-    decoded_table[0x02] = decoded_table[0x00];
-    decoded_table[0x02].flags |= InstFlags_DirBit;
-    
-    decoded_table[0x03] = decoded_table[0x02];
-    decoded_table[0x03].flags |= InstFlags_RegisterWord;
-    
-    inst = &decoded_table[0x80];
-    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData | InstFlags_DecodeMnemonic);
+    DecodedInstruction* inst = &decoded_table[0x80];
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractMode | InstFlags_ExtractData | InstFlags_DecodeMnemonic);
     inst->op_encoding = OP_ENCODING_IMM_RM;
     inst->decode_mnemonic_byte = 1;
     inst->decode_mnemonic_bitshift = 3;
     inst->decode_mnemonic_mask = 0x07;
     inst->decode_mnemonic_table = &group_one_mnemonics[0];
+    inst->rm_encoding_decode_byte = 1;
     inst->byte_offset = 2;
     
     decoded_table[0x81] = decoded_table[0x80];
@@ -283,9 +322,10 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0x83].flags |= InstFlags_UseSignedImmediate;
     
     inst = &decoded_table[0x84];
-    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory);
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractMode);
     inst->op_encoding = OP_ENCODING_RM_R;
     inst->type = InstructionType_test;
+    inst->rm_encoding_decode_byte = 1;
     inst->byte_offset = 2;
     
     decoded_table[0x85] = decoded_table[0x84];
@@ -324,6 +364,51 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0x8F] = decoded_table[0x8D];
     decoded_table[0x8F].op_encoding = OP_ENCODING_RM;
     decoded_table[0x8F].type = InstructionType_pop; 
+    
+    // for (int i = 0; i < 16; i++) {
+    //     inst = &decoded_table[0xB0 + i];
+    //     inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData);
+    //     inst->op_encoding = OP_ENCODING_IMM_RM;
+    //     inst->type = InstructionType_mov;
+    //     // nocheckin: maybe set rm_encoding directly, but we would need to make sure it doesn't get overriden when we fetch from table. 
+    //     inst->rm_encoding_decode_byte = 0;
+    //     inst->mode = MODE_REGISTER;
+    //     inst->byte_offset = 1;
+        
+    //     if (i >= 8) {
+    //         inst->flags |= (InstFlags_ExtractWord | InstFlags_RegisterWord); 
+    //     }
+    // }
+    
+    inst = &decoded_table[0xE4];
+    inst->flags = (InstFlags_Valid | InstFlags_ExtractData);
+    inst->op_encoding = OP_ENCODING_IMM_ACC;
+    inst->type = InstructionType_in;
+    inst->byte_offset = 1;
+    
+    decoded_table[0xE5] = decoded_table[0xE4];
+    decoded_table[0xE5].flags |= InstFlags_RegisterWord;
+    
+    decoded_table[0xE6] = decoded_table[0xE4];
+    decoded_table[0xE6].type = InstructionType_out;
+    decoded_table[0xE6].flags |= InstFlags_DirBit;
+    
+    decoded_table[0xE7] = decoded_table[0xE6];
+    decoded_table[0xE7].flags |= InstFlags_RegisterWord;
+
+    inst = &decoded_table[0xFE];
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractMode | InstFlags_DecodeMnemonic);
+    inst->op_encoding = OP_ENCODING_RM;
+    inst->decode_mnemonic_byte = 1;
+    inst->decode_mnemonic_bitshift = 3;
+    inst->decode_mnemonic_mask = 0x07;
+    inst->decode_mnemonic_table = &group_three_mnemonics[0];
+    inst->rm_encoding_decode_byte = 1;
+    inst->byte_offset = 2;
+    
+    decoded_table[0xFF] = decoded_table[0xFE];
+    decoded_table[0xFF].flags |= InstFlags_RegisterWord;
+    
 }
 
 int main(int argc, char* argv[]) {
@@ -398,7 +483,7 @@ int main(int argc, char* argv[]) {
         
         if (decoded_table[bytes[0]].flags & InstFlags_Valid) {
             decoded = decoded_table[bytes[0]];
-            decoded.rm_encoding = bytes[1] & 0x07;
+            decoded.rm_encoding = bytes[decoded.rm_encoding_decode_byte] & 0x07;
             if (use_segment_override) {
                 decoded.flags |= InstFlags_UseSegmentOverride;
                 decoded.segment_register = segment_register;
@@ -406,10 +491,10 @@ int main(int argc, char* argv[]) {
             
             if (decoded.flags & InstFlags_DecodeMnemonic) {
                 u8 index = (bytes[decoded.decode_mnemonic_byte] >> decoded.decode_mnemonic_bitshift) & decoded.decode_mnemonic_mask;
-                decoded.type = group_one_mnemonics[index];
+                decoded.type = decoded.decode_mnemonic_table[index];
             }
             
-            if (decoded.flags & InstFlags_DecodeRegisterMemory) {
+            if (decoded.flags & InstFlags_ExtractMode) {
                 decoded.mode = (Mode)(bytes[1] >> 6);
             }
             
@@ -420,43 +505,25 @@ int main(int argc, char* argv[]) {
             byte_count += decoded.byte_offset;
             
         } else if (bytes[0] >= 0x04 && bytes[0] <= 0x3F) {
-            if ((bytes[0] & 0x06) == 0x06) {
-                if ((bytes[0] & 0xF0) <= 0x10) {
-                    decoded.type = (bytes[0] & 0x01) ? InstructionType_pop : InstructionType_push;
-                    decoded.segment_register = (SegmentRegister)((bytes[0] >> 3) & 0x03);
-                    
-                    capture_instruction(address, "%s %s\n", instruction_strings[decoded.type], segment_register_strings[decoded.segment_register]);
-                    i += 1;
-                    goto finish_instruction;
-                    
-                } else if (bytes[0] & 0x07 == 0x07) {
-                    switch ((bytes[0] >> 3) & 0x03) {
-                        case 0: decoded.type = InstructionType_daa; break;
-                        case 1: decoded.type = InstructionType_das; break;
-                        case 2: decoded.type = InstructionType_aaa; break;
-                        case 3: decoded.type = InstructionType_aas; break;
-                    }
+            if ((bytes[0] & 0xF0) <= 0x10) {
+                decoded.type = (bytes[0] & 0x01) ? InstructionType_pop : InstructionType_push;
+                decoded.segment_register = (SegmentRegister)((bytes[0] >> 3) & 0x03);
                 
-                    capture_instruction(address, "%s\n", instruction_strings[decoded.type]);
-                    i += 1;
-                    goto finish_instruction;
-
-                }
+                capture_instruction(address, "%s %s\n", instruction_strings[decoded.type], segment_register_strings[decoded.segment_register]);
+                i += 1;
+                goto finish_instruction;
                 
-            } else { 
-                decoded.type = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
-                if (bytes[0] & 0x04) {
-                    decoded.op_encoding = OP_ENCODING_IMM_ACC; 
-                    decoded.flags |= InstFlags_ExtractData;
-                    if (decoded.flags & InstFlags_RegisterWord) {
-                        decoded.flags |= InstFlags_ExtractWord;
-                    }
-                    byte_count += 1;
-                } else {
-                    decoded.op_encoding = OP_ENCODING_RM_R;
-                    decoded.flags |= InstFlags_DecodeRegisterMemory;
-                    byte_count += 2;
+            } else if (bytes[0] & 0x07 == 0x07) {
+                switch ((bytes[0] >> 3) & 0x03) {
+                    case 0: decoded.type = InstructionType_daa; break;
+                    case 1: decoded.type = InstructionType_das; break;
+                    case 2: decoded.type = InstructionType_aaa; break;
+                    case 3: decoded.type = InstructionType_aas; break;
                 }
+            
+                capture_instruction(address, "%s\n", instruction_strings[decoded.type]);
+                i += 1;
+                goto finish_instruction;
             }
             
         } else if (bytes[0] >= 0x40 && bytes[0] <= 0x5F) {
@@ -702,14 +769,6 @@ int main(int argc, char* argv[]) {
             i += 2; 
             capture_jump_instruction(address, i + (char)bytes[1], mnemonics[bytes[0] & 0x03]);
             goto finish_instruction;
-        
-        } else if (bytes[0] >= 0xE4 && bytes[0] <= 0xE7) {
-            decoded.type = (bytes[0] & 0x2) ? InstructionType_out : InstructionType_in;
-            decoded.op_encoding = OP_ENCODING_IMM_ACC;
-            
-            decoded.flags |= InstFlags_ExtractData;
-            
-            byte_count += 1;
             
         } else if ((bytes[0] & 0xFE) == 0xE8) {
             decoded.type = (bytes[0] & 0x01) ? InstructionType_jmp : InstructionType_call;
@@ -772,6 +831,12 @@ int main(int argc, char* argv[]) {
             goto finish_instruction;
         
         } else if ((bytes[0] & 0xFE) == 0xF6) {
+            
+            // nocheckin: we can move 0xF6 and 0xF7 to the table, but we need additional
+            // decoding logic to check the instruction type in the second byte. 
+            // for test, we need extract data (byte/word) and change the type to OP_ENCODING_IMM_RM.
+            // for the rest, we do not extract data and set the type to OP_ENCODING_RM.
+        
             InstructionType mnemonics[] = {
                 InstructionType_test,
                 InstructionType_Undefined,
@@ -815,22 +880,6 @@ int main(int argc, char* argv[]) {
             capture_instruction(address, "%s\n", instruction_strings[decoded.type]);
             i += 1;
             goto finish_instruction;
-        
-        } else if ((bytes[0] & 0xFE) == 0xFE) {            
-            InstructionType mnemonics[] = {
-                InstructionType_inc,
-                InstructionType_dec,
-                InstructionType_call,
-                InstructionType_call_far,
-                InstructionType_jmp,
-                InstructionType_jmp_far,
-                InstructionType_push
-            };
-            
-            decoded.op_encoding = OP_ENCODING_RM;
-            decoded.flags |= InstFlags_DecodeRegisterMemory;
-            decoded.type = mnemonics[(bytes[1] >> 3) & 0x07]; 
-            byte_count += 2;
         }
         
         // nocheckin

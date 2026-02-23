@@ -12,6 +12,8 @@
 typedef void* (*AllocFunc) (size_t size);
 typedef void  (*FreeFunc)  (void*);
 
+#define countOf(_array) (sizeof(_array) / sizeof(*_array))
+
 void log_error_impl(const char *fmt, ...) {
     va_list ap;
     fputs("\nerror: ", stderr);
