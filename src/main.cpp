@@ -365,20 +365,20 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0x8F].op_encoding = OP_ENCODING_RM;
     decoded_table[0x8F].type = InstructionType_pop; 
     
-    // for (int i = 0; i < 16; i++) {
-    //     inst = &decoded_table[0xB0 + i];
-    //     inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData);
-    //     inst->op_encoding = OP_ENCODING_IMM_RM;
-    //     inst->type = InstructionType_mov;
-    //     // nocheckin: maybe set rm_encoding directly, but we would need to make sure it doesn't get overriden when we fetch from table. 
-    //     inst->rm_encoding_decode_byte = 0;
-    //     inst->mode = MODE_REGISTER;
-    //     inst->byte_offset = 1;
+    for (int i = 0; i < 16; i++) {
+        inst = &decoded_table[0xB0 + i];
+        inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData);
+        inst->op_encoding = OP_ENCODING_IMM_RM;
+        inst->type = InstructionType_mov;
+        // nocheckin: maybe set rm_encoding directly, but we would need to make sure it doesn't get overriden when we fetch from table. 
+        inst->rm_encoding_decode_byte = 0;
+        inst->mode = MODE_REGISTER;
+        inst->byte_offset = 1;
         
-    //     if (i >= 8) {
-    //         inst->flags |= (InstFlags_ExtractWord | InstFlags_RegisterWord); 
-    //     }
-    // }
+        if (i >= 8) {
+            inst->flags |= (InstFlags_ExtractWord | InstFlags_RegisterWord); 
+        }
+    }
     
     inst = &decoded_table[0xE4];
     inst->flags = (InstFlags_Valid | InstFlags_ExtractData);
@@ -634,26 +634,6 @@ int main(int argc, char* argv[]) {
             i += 1;
             goto finish_instruction;
             
-        } else if ((bytes[0] & 0xF0) == 0xB0) {
-            decoded.type = InstructionType_mov;
-            decoded.op_encoding = OP_ENCODING_IMM_RM; 
-            decoded.rm_encoding = bytes[0] & 0x07; 
-            if ((bytes[0] & 0x08) != 0) {
-                decoded.flags |= InstFlags_RegisterWord;
-            } else {
-                decoded.flags &= ~InstFlags_RegisterWord;
-            }
-            
-            decoded.flags |= InstFlags_ExtractData;
-            if (decoded.flags & InstFlags_RegisterWord) {
-                decoded.flags |= InstFlags_ExtractWord; 
-            }
-            
-            decoded.flags |= InstFlags_DecodeRegisterMemory;
-            decoded.mode = MODE_REGISTER;
-        
-            byte_count += 1;
-        
         } else if ((bytes[0] & 0xFE) == 0xC2) {
             u8 no_immediate = bytes[0] & 0x01;
             if (no_immediate) {
