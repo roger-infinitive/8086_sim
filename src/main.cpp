@@ -115,16 +115,30 @@ struct Instruction {
     int jump_address;
 };
 
+// nocheckin: instead of booleans use flags
 struct DecodedInstruction {
+    bool valid;
     InstructionType type;
     OpEncoding op_encoding;
-    bool word;
+    bool register_word;
     bool use_segment_override;
+    bool use_signed_immediate;
     u8 reg_encoding;
-    // nocheckin: when decoding we seem to pull the segment_register out from the same bits?
     SegmentRegister segment_register;
     // register_memory decode
+    bool decode_register_memory;
     u8 rm_encoding;
+    
+    bool extract_data;
+    bool extract_word;
+    
+    bool decode_mnemonic;
+    int decode_mnemonic_byte;
+    int decode_mnemonic_bitshift;
+    u8 decode_mnemonic_mask;
+    const InstructionType* decode_mnemonic_table;
+    
+    int byte_offset;
 };
 
 char instruction_buffer[64];
@@ -222,7 +236,32 @@ bool parse_args(int argc, char* argv[], ProgramState* state) {
     return true;
 }
 
+DecodedInstruction decoded_table[256];
+
+void InitializeDecodedInstructionTable() { 
+    // nocheckin:
+    
+    DecodedInstruction* inst = &decoded_table[0x80];
+    inst->valid = true;
+    inst->op_encoding = OP_ENCODING_IMM_RM;
+    inst->decode_register_memory = true;
+    inst->extract_data = true;
+    inst->extract_word = false;
+    inst->register_word = false;
+    inst->use_signed_immediate = false;
+    
+    inst->decode_mnemonic = true;
+    inst->decode_mnemonic_byte = 1;
+    inst->decode_mnemonic_bitshift = 3;
+    inst->decode_mnemonic_mask = 0x07;
+    inst->decode_mnemonic_table = &group_one_mnemonics[0];
+    
+    inst->byte_offset = 2;
+}
+
 int main(int argc, char* argv[]) {
+    InitializeDecodedInstructionTable();
+
     ProgramState program_state = {};
     if (!parse_args(argc, argv, &program_state)) {
         return 1;
@@ -242,14 +281,8 @@ int main(int argc, char* argv[]) {
         bool is_bit_shift = false;
         u8 bit_shift_type = 0;
 
-        bool use_signed_immediate = false;
-        bool decode_register_memory = false;
-        bool extract_data = false;
-        bool extract_word = false;
         bool use_lock = false;
-        
-        DecodedInstruction decoded = {};
-        
+                
         // nocheckin: not fully implemented.
         char address_operand[32];
         memset(address_operand, 0, 32);
@@ -264,13 +297,15 @@ int main(int argc, char* argv[]) {
             bytes = &file.buffer[i];
         }
         
+        bool use_segment_override = false;
+        SegmentRegister segment_register;
         switch (bytes[0]) {
             case 0x26:
             case 0x2E:
             case 0x36:
             case 0x3E: {
-                decoded.use_segment_override = true;
-                decoded.segment_register = (SegmentRegister)(bytes[0] >> 3 & 0x03);
+                use_segment_override = true;
+                segment_register = (SegmentRegister)(bytes[0] >> 3 & 0x03);
                 i += 1;
                 bytes = &file.buffer[i];
             } break;
@@ -278,12 +313,26 @@ int main(int argc, char* argv[]) {
         
         int byte_count = 0;
         
-        decoded.word = (bytes[0] & 0x01) != 0;
+        DecodedInstruction decoded = {};
+        decoded.register_word = (bytes[0] & 0x01) != 0;
         u8 mode = bytes[1] >> 6;
         decoded.rm_encoding   = bytes[1] & 0x07;
         u8 dir  = bytes[0] & 0x02;
         
-        if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
+        if (decoded_table[bytes[0]].valid) {
+            decoded = decoded_table[bytes[0]];
+            decoded.rm_encoding = bytes[1] & 0x07;
+            decoded.use_segment_override = use_segment_override;
+            decoded.segment_register = segment_register;
+            
+            if (decoded.decode_mnemonic) {
+                u8 index = (bytes[decoded.decode_mnemonic_byte] >> decoded.decode_mnemonic_bitshift) & decoded.decode_mnemonic_mask;
+                decoded.type = group_one_mnemonics[index];
+            }
+            
+            byte_count += decoded.byte_offset;
+            
+        } else if (bytes[0] >= 0x00 && bytes[0] <= 0x3F) {
             if ((bytes[0] & 0x06) == 0x06) {
                 if ((bytes[0] & 0xF0) <= 0x10) {
                     decoded.type = (bytes[0] & 0x01) ? InstructionType_pop : InstructionType_push;
@@ -311,12 +360,12 @@ int main(int argc, char* argv[]) {
                 decoded.type = group_one_mnemonics[((bytes[0] >> 3) & 0x07)];
                 if (bytes[0] & 0x04) {
                     decoded.op_encoding = OP_ENCODING_IMM_ACC; 
-                    extract_data = true;
-                    extract_word = decoded.word != 0;
+                    decoded.extract_data = true;
+                    decoded.extract_word = decoded.register_word;
                     byte_count += 1;
                 } else {
                     decoded.op_encoding = OP_ENCODING_RM_R;
-                    decode_register_memory = true;
+                    decoded.decode_register_memory = true;
                     byte_count += 2;
                 }
             }
@@ -363,17 +412,17 @@ int main(int argc, char* argv[]) {
             capture_jump_instruction(address, i + (char)bytes[1], instruction_strings[decoded.type]);
             goto finish_instruction;
         
-        } else if (bytes[0] >= 0x80 && bytes[0] <= 0x83) {
+        } else if (bytes[0] >= 0x81 && bytes[0] <= 0x83) {
             decoded.op_encoding = OP_ENCODING_IMM_RM;
-            decode_register_memory = true;
-            extract_data = true;
-            extract_word = decoded.word != 0;
+            decoded.decode_register_memory = true;
+            decoded.extract_data = true;
+            decoded.extract_word = decoded.register_word; 
             decoded.type = group_one_mnemonics[((bytes[1] >> 3) & 0x07)];
             
             if (bytes[0] == 0x83) {
-                use_signed_immediate = true;
+                decoded.use_signed_immediate = true;
             } else {
-                use_signed_immediate = (bytes[0] & 0b00000010) != 0;
+                decoded.use_signed_immediate = (bytes[0] & 0b00000010) != 0;
             }
             
             byte_count += 2;
@@ -388,7 +437,7 @@ int main(int argc, char* argv[]) {
             
             decoded.type = mnemonics[(bytes[0] & 0x0F) - 0x04];
             decoded.op_encoding = OP_ENCODING_RM_R;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             
             if (use_lock) {
                 dir = 0;
@@ -400,28 +449,28 @@ int main(int argc, char* argv[]) {
         
         } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
             decoded.op_encoding = OP_ENCODING_RM_R;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = InstructionType_mov;
             byte_count += 2;
             
         } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
             decoded.op_encoding = OP_ENCODING_SEG;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             dir = bytes[0] & 0x02;
-            decoded.word = true;
+            decoded.register_word = true;
             decoded.type = InstructionType_mov;
             byte_count += 2;
         
         } else if (bytes[0] == 0x8D) {
             decoded.op_encoding = OP_ENCODING_RM_R;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = InstructionType_lea;
             dir = 1;
             byte_count += 2;
         
         } else if (bytes[0] == 0x8F) {
             decoded.op_encoding = OP_ENCODING_RM;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = InstructionType_pop;
             byte_count += 2;
             
@@ -463,16 +512,16 @@ int main(int argc, char* argv[]) {
         } else if ((bytes[0] & 0xFC) == 0xA0) {
             u16 address = bytes[1] | bytes[2] << 8;
             if (dir) {
-                capture_instruction(address, "mov [%hd], %s\n", address, decoded.word ? "ax" : "al");
+                capture_instruction(address, "mov [%hd], %s\n", address, decoded.register_word ? "ax" : "al");
             } else {
-                capture_instruction(address, "mov %s, [%hd]\n", decoded.word ? "ax" : "al", address);
+                capture_instruction(address, "mov %s, [%hd]\n", decoded.register_word ? "ax" : "al", address);
             }
             i += 3;
             goto finish_instruction;
             
         } else if ((bytes[0] & 0xFE) == 0xA8) {
-            extract_data = true;
-            extract_word = decoded.word;
+            decoded.extract_data = true;
+            decoded.extract_word = decoded.register_word;
             decoded.op_encoding = OP_ENCODING_IMM_ACC;
             decoded.type = InstructionType_test;
             byte_count += 1;
@@ -484,7 +533,7 @@ int main(int argc, char* argv[]) {
                 decoded.type = (bytes[0] & 0x02) ? InstructionType_movs : InstructionType_cmps;
             }
             
-            capture_instruction(address, "%s%s\n", instruction_strings[decoded.type], decoded.word ? "w" : "b");
+            capture_instruction(address, "%s%s\n", instruction_strings[decoded.type], decoded.register_word ? "w" : "b");
             
             i += 1;
             goto finish_instruction;
@@ -493,12 +542,12 @@ int main(int argc, char* argv[]) {
             decoded.type = InstructionType_mov;
             decoded.op_encoding = OP_ENCODING_IMM_RM; 
             decoded.rm_encoding = bytes[0] & 0x07; 
-            decoded.word = (bytes[0] & 0x08) != 0;
+            decoded.register_word = (bytes[0] & 0x08) != 0;
             
-            extract_data = true;
-            extract_word = decoded.word; 
+            decoded.extract_data = true;
+            decoded.extract_word = decoded.register_word;
             
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             mode = MODE_REGISTER;
         
             byte_count += 1;
@@ -511,8 +560,8 @@ int main(int argc, char* argv[]) {
                 goto finish_instruction;
                 
             } else {
-                extract_data = true;
-                extract_word = true;
+                decoded.extract_data = true;
+                decoded.extract_word = true;
                 byte_count += 1;
                 decoded.type = InstructionType_ret;
                 decoded.op_encoding = OP_ENCODING_IMM;
@@ -520,17 +569,17 @@ int main(int argc, char* argv[]) {
         
         } else if ((bytes[0] & 0xFE) == 0xC4) {
             decoded.op_encoding = OP_ENCODING_RM_R;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = (bytes[0] & 0x01) ? InstructionType_lds : InstructionType_les;
-            decoded.word = true;
+            decoded.register_word = true;
             dir = 1;
             byte_count += 2;
         
         } else if ((bytes[0] & 0xFE) == 0xC6) {
             decoded.op_encoding = OP_ENCODING_IMM_RM;
-            decode_register_memory = true;
-            extract_data = true;
-            extract_word = decoded.word;
+            decoded.decode_register_memory = true;
+            decoded.extract_data = true;
+            decoded.extract_word = decoded.register_word;
             decoded.type = InstructionType_mov;
             byte_count += 2;
             
@@ -540,8 +589,8 @@ int main(int argc, char* argv[]) {
                 i += 1;
                 goto finish_instruction;
             } else {
-                extract_data = true;
-                extract_word = true;
+                decoded.extract_data = true;
+                decoded.extract_word = true;
                 byte_count += 1;
                 decoded.type = InstructionType_retf;
                 decoded.op_encoding = OP_ENCODING_IMM;
@@ -559,8 +608,8 @@ int main(int argc, char* argv[]) {
             decoded.type = mnemonics[op];
             
             if (op == 1) {
-                extract_data = true;
-                extract_word = false;
+                decoded.extract_data = true;
+                decoded.extract_word = false;
                 decoded.op_encoding = OP_ENCODING_IMM;
                 byte_count += 1;
             } else {
@@ -583,7 +632,7 @@ int main(int argc, char* argv[]) {
             
             decoded.type = mnemonics[(bytes[1] >> 3) & 0x07];
             decoded.op_encoding = OP_ENCODING_RM;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             is_bit_shift = true;
             bit_shift_type = bytes[0] & 0x02;
 
@@ -625,8 +674,8 @@ int main(int argc, char* argv[]) {
             decoded.type = (bytes[0] & 0x2) ? InstructionType_out : InstructionType_in;
             decoded.op_encoding = OP_ENCODING_IMM_ACC;
             
-            extract_data = true;
-            extract_word = false;
+            decoded.extract_data = true;
+            decoded.extract_word = false;
             
             byte_count += 1;
             
@@ -656,10 +705,11 @@ int main(int argc, char* argv[]) {
             dir = bytes[0] & 0x02;
             decoded.type = dir ? InstructionType_out : InstructionType_in;
 
+            char* reg = decoded.register_word ? "ax" : "al";
             if (dir) {
-                capture_instruction(address, "%s dx, %s\n", instruction_strings[decoded.type], decoded.word ? "ax" : "al");
+                capture_instruction(address, "%s dx, %s\n", instruction_strings[decoded.type], reg);
             } else {
-                capture_instruction(address, "%s %s, dx\n", instruction_strings[decoded.type], decoded.word ? "ax" : "al");
+                capture_instruction(address, "%s %s, dx\n", instruction_strings[decoded.type], reg);
             }
             
             i += 1;
@@ -674,8 +724,8 @@ int main(int argc, char* argv[]) {
                 decoded.type = (bytes[1] & 0x02) ? InstructionType_cmps : InstructionType_movs;
             }
             
-            decoded.word = (bytes[1] & 0x01) != 0;
-            capture_instruction(address, "rep %s%s\n", instruction_strings[decoded.type], decoded.word ? "w" : "b");
+            decoded.register_word = (bytes[1] & 0x01) != 0;
+            capture_instruction(address, "rep %s%s\n", instruction_strings[decoded.type], decoded.register_word ? "w" : "b");
             
             i += 2;
             goto finish_instruction;
@@ -701,14 +751,14 @@ int main(int argc, char* argv[]) {
             u8 op = (bytes[1] >> 3) & 0x07;
             
             if (op == 0) {
-                extract_data = true;
-                extract_word = decoded.word;
+                decoded.extract_data = true;
+                decoded.extract_word = decoded.register_word;
                 decoded.op_encoding = OP_ENCODING_IMM_RM;
             } else {
                 decoded.op_encoding = OP_ENCODING_RM;
             }
             
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = mnemonics[op];
             byte_count += 2;
         
@@ -741,15 +791,15 @@ int main(int argc, char* argv[]) {
             };
             
             decoded.op_encoding = OP_ENCODING_RM;
-            decode_register_memory = true;
+            decoded.decode_register_memory = true;
             decoded.type = mnemonics[(bytes[1] >> 3) & 0x07]; 
             byte_count += 2;
         }
         
         // nocheckin
-        if (decode_register_memory) {
+        if (decoded.decode_register_memory) {
             if (mode == MODE_REGISTER) {
-                const char** reg_table = decoded.word ? register_map_word : register_map_byte;
+                const char** reg_table = decoded.register_word ? register_map_word : register_map_byte;
                 sb_appendf(&address_operand_sb, reg_table[decoded.rm_encoding]); 
             } else {
                 short displacement = 0;
@@ -792,8 +842,8 @@ int main(int argc, char* argv[]) {
         }
         
         u16 data = 0;
-        if (extract_data) {
-            byte_count += extract_encoded_data(bytes, byte_count, extract_word, use_signed_immediate, &data);
+        if (decoded.extract_data) {
+            byte_count += extract_encoded_data(bytes, byte_count, decoded.extract_word, decoded.use_signed_immediate, &data);
         }
         
         switch (decoded.op_encoding) {
@@ -804,14 +854,14 @@ int main(int argc, char* argv[]) {
             } break;
             
             case OP_ENCODING_IMM: {
-                const char* size_label = extract_word ? "word" : "byte";
+                const char* size_label = decoded.extract_word ? "word" : "byte";
                 capture_instruction(address, "%s %s %hu\n", instruction_strings[decoded.type], size_label, data);
                 i += byte_count;
                 goto finish_instruction;
             } break;
             
             case OP_ENCODING_RM: {            
-                const char* size_label = decoded.word ? "word" : "byte";
+                const char* size_label = decoded.register_word ? "word" : "byte";
                 
                 if (is_bit_shift) {
                     capture_instruction(address, "%s %s %s, %s\n", instruction_strings[decoded.type], size_label, address_operand, bit_shift_type ? "cl" : "1");
@@ -830,7 +880,7 @@ int main(int argc, char* argv[]) {
             } break;
             
             case OP_ENCODING_IMM_RM: {
-                const char* size_label = extract_word ? "word" : "byte";
+                const char* size_label = decoded.extract_word ? "word" : "byte";
                 capture_instruction(address, "%s %s, %s %hu\n", instruction_strings[decoded.type], address_operand, size_label, data);
     
                 i += byte_count;
@@ -838,8 +888,8 @@ int main(int argc, char* argv[]) {
             } break;
           
             case OP_ENCODING_IMM_ACC: {
-                const char* size_label = extract_word ? "word" : "byte";
-                const char* reg = decoded.word ? "ax" : "al";
+                const char* size_label = decoded.extract_word ? "word" : "byte";
+                const char* reg = decoded.register_word ? "ax" : "al";
                 
                 if (dir) {
                     capture_instruction(address, "%s %s %hu, %s\n", instruction_strings[decoded.type], size_label, data, reg);
@@ -857,6 +907,7 @@ int main(int argc, char* argv[]) {
         fputc('\n', stderr);
         ERROR_ABORT();
     
+        // nocheckin: temporary as we refactor the decoder into a better state.
         finish_instruction:
         
         if (program_state.exec_enabled) {
@@ -880,7 +931,7 @@ int main(int argc, char* argv[]) {
                     *dest_register = *src_register;
 
                     const char* sr_string = segment_register_strings[decoded.segment_register];
-                    const char** reg_table = decoded.word ? register_map_word : register_map_byte;
+                    const char** reg_table = decoded.register_word ? register_map_word : register_map_byte;
                     const char* reg_string = reg_table[decoded.rm_encoding];
                     const char* dest = dir ? sr_string : reg_string;
                     const char* source = dir ? reg_string : sr_string;
@@ -899,7 +950,7 @@ int main(int argc, char* argv[]) {
                         case InstructionType_mov: {
                             u16 previous_value = registers[dest_reg];
                         
-                            if (decoded.word) {
+                            if (decoded.register_word) {
                                 registers[dest_reg] = registers[src_reg];
                             } else {
                                 u16 src_value = 0;
@@ -916,7 +967,7 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                         
-                            const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                            const char** reg_table = decoded.register_word ? register_map_word : register_map_byte; 
                             const char* reg_operand = reg_table[decoded.reg_encoding];
                             const char* rm_operand = reg_table[decoded.rm_encoding];
                             const char* dest = dir ? reg_operand : rm_operand;
@@ -934,7 +985,7 @@ int main(int argc, char* argv[]) {
                     Register reg = (Register)(decoded.rm_encoding & 0x03);
                     u16 previous_value = registers[reg];
                     
-                    if (decoded.word) {
+                    if (decoded.register_word) {
                         registers[reg] = data;
                     } else if (decoded.rm_encoding <= 3) {
                         // Set high bits of register.
@@ -944,7 +995,7 @@ int main(int argc, char* argv[]) {
                         registers[reg] = data | (registers[reg] & 0xFF00);
                     }
                     
-                    const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                    const char** reg_table = decoded.register_word ? register_map_word : register_map_byte; 
                     const char* reg_label = reg_table[reg];
                     
                     printf("mov %s, %hu ; %s:0x%01hx->0x%01hx\n", reg_label, data, register_map_word[reg], previous_value, registers[reg]);
@@ -955,7 +1006,7 @@ int main(int argc, char* argv[]) {
             switch (decoded.op_encoding) {
                 case OP_ENCODING_SEG: {
                     const char* sr_string = segment_register_strings[decoded.segment_register];
-                    const char** reg_table = decoded.word ? register_map_word : register_map_byte;
+                    const char** reg_table = decoded.register_word ? register_map_word : register_map_byte;
                     const char* reg_string = address_operand;
                     const char* dest = dir ? sr_string : reg_string;
                     const char* source = dir ? reg_string : sr_string;
@@ -964,7 +1015,7 @@ int main(int argc, char* argv[]) {
                 } break;
                 
                 case OP_ENCODING_RM_R: {
-                    const char** reg_table = decoded.word ? register_map_word : register_map_byte; 
+                    const char** reg_table = decoded.register_word ? register_map_word : register_map_byte; 
                     const char* reg_operand = reg_table[decoded.reg_encoding];
                     const char* dest   = dir ? reg_operand : address_operand;
                     const char* source = dir ? address_operand : reg_operand;
