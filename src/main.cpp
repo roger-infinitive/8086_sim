@@ -127,7 +127,6 @@ enum InstFlags : u32{
     InstFlags_DecodeMnemonic       = 1 << 6,
     InstFlags_UseSegmentOverride   = 1 << 7,
     InstFlags_DirBit               = 1 << 8,
-    InstFlags_DecodeMode           = 1 << 9,
 };
 
 // nocheckin: instead of booleans use flags
@@ -250,7 +249,7 @@ void InitializeDecodedInstructionTable() {
     // nocheckin:
     
     DecodedInstruction* inst = &decoded_table[0x00];
-    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_DecodeMode);
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory);
     inst->type = InstructionType_add;
     inst->op_encoding = OP_ENCODING_RM_R;
     inst->byte_offset = 2;
@@ -265,7 +264,7 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0x03].flags |= InstFlags_RegisterWord;
     
     inst = &decoded_table[0x80];
-    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData | InstFlags_DecodeMnemonic | InstFlags_DecodeMode);
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractData | InstFlags_DecodeMnemonic);
     inst->op_encoding = OP_ENCODING_IMM_RM;
     inst->decode_mnemonic_byte = 1;
     inst->decode_mnemonic_bitshift = 3;
@@ -282,6 +281,49 @@ void InitializeDecodedInstructionTable() {
     
     decoded_table[0x83] = decoded_table[0x81];
     decoded_table[0x83].flags |= InstFlags_UseSignedImmediate;
+    
+    inst = &decoded_table[0x84];
+    inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory);
+    inst->op_encoding = OP_ENCODING_RM_R;
+    inst->type = InstructionType_test;
+    inst->byte_offset = 2;
+    
+    decoded_table[0x85] = decoded_table[0x84];
+    decoded_table[0x85].flags |= InstFlags_RegisterWord;
+    
+    decoded_table[0x86] = decoded_table[0x84];
+    decoded_table[0x86].flags |= InstFlags_DirBit;
+    decoded_table[0x86].type = InstructionType_xchg;
+    
+    decoded_table[0x87] = decoded_table[0x86];
+    decoded_table[0x87].flags |= InstFlags_RegisterWord;
+    
+    decoded_table[0x88] = decoded_table[0x84];
+    decoded_table[0x88].type = InstructionType_mov; 
+    
+    decoded_table[0x89] = decoded_table[0x88];
+    decoded_table[0x89].flags |= InstFlags_RegisterWord;
+    
+    decoded_table[0x8A] = decoded_table[0x88];
+    decoded_table[0x8A].flags |= InstFlags_DirBit;
+    
+    decoded_table[0x8B] = decoded_table[0x8A];
+    decoded_table[0x8B].flags |= InstFlags_RegisterWord;
+    
+    decoded_table[0x8C] = decoded_table[0x88];
+    decoded_table[0x8C].flags |= InstFlags_RegisterWord;
+    decoded_table[0x8C].op_encoding = OP_ENCODING_SEG;
+    
+    decoded_table[0x8E] = decoded_table[0x8C];
+    decoded_table[0x8E].flags |= InstFlags_DirBit;
+    
+    decoded_table[0x8D] = decoded_table[0x8E];
+    decoded_table[0x8D].op_encoding = OP_ENCODING_RM_R;
+    decoded_table[0x8D].type = InstructionType_lea;
+    
+    decoded_table[0x8F] = decoded_table[0x8D];
+    decoded_table[0x8F].op_encoding = OP_ENCODING_RM;
+    decoded_table[0x8F].type = InstructionType_pop; 
 }
 
 int main(int argc, char* argv[]) {
@@ -367,8 +409,12 @@ int main(int argc, char* argv[]) {
                 decoded.type = group_one_mnemonics[index];
             }
             
-            if (decoded.flags & InstFlags_DecodeMode) {
+            if (decoded.flags & InstFlags_DecodeRegisterMemory) {
                 decoded.mode = (Mode)(bytes[1] >> 6);
+            }
+            
+            if (use_lock) {
+                decoded.flags &= ~InstFlags_DirBit;
             }
             
             byte_count += decoded.byte_offset;
@@ -455,48 +501,6 @@ int main(int argc, char* argv[]) {
             capture_jump_instruction(address, i + (char)bytes[1], instruction_strings[decoded.type]);
             goto finish_instruction;
         
-        } else if (bytes[0] >= 0x84 && bytes[0] <= 0x87) {
-            const InstructionType mnemonics[] = {
-                InstructionType_test,
-                InstructionType_test,
-                InstructionType_xchg,
-                InstructionType_xchg
-            };
-            
-            decoded.type = mnemonics[(bytes[0] & 0x0F) - 0x04];
-            decoded.op_encoding = OP_ENCODING_RM_R;
-            decoded.flags |= InstFlags_DecodeRegisterMemory;
-            
-            if (use_lock) {
-                decoded.flags &= ~InstFlags_DirBit;
-            }
-            
-            byte_count += 2;
-        
-        } else if (bytes[0] >= 0x88 && bytes[0] <= 0x8B) {
-            decoded.op_encoding = OP_ENCODING_RM_R;
-            decoded.flags |= InstFlags_DecodeRegisterMemory;
-            decoded.type = InstructionType_mov;
-            byte_count += 2;
-            
-        } else if (bytes[0] == 0x8C || bytes[0] == 0x8E) {
-            decoded.op_encoding = OP_ENCODING_SEG;
-            decoded.flags |= (InstFlags_DecodeRegisterMemory | InstFlags_RegisterWord);
-            decoded.type = InstructionType_mov;
-            byte_count += 2;
-        
-        } else if (bytes[0] == 0x8D) {
-            decoded.op_encoding = OP_ENCODING_RM_R;
-            decoded.flags |= (InstFlags_DecodeRegisterMemory | InstFlags_DirBit);
-            decoded.type = InstructionType_lea;
-            byte_count += 2;
-        
-        } else if (bytes[0] == 0x8F) {
-            decoded.op_encoding = OP_ENCODING_RM;
-            decoded.flags |= InstFlags_DecodeRegisterMemory;
-            decoded.type = InstructionType_pop;
-            byte_count += 2;
-            
         } else if (bytes[0] >= 0x90 && bytes[0] <= 0x97) {
             capture_instruction(address, "xchg ax, %s\n", register_map_word[bytes[0] & 0x0F]);
             i += 1;
