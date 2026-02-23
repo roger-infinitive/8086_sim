@@ -172,11 +172,11 @@ struct Instruction {
     int address;
     char* string;
     
-    bool is_jump;
+    bool is_jump_label;
     int jump_address;
 };
 
-enum InstFlags : u32{
+enum InstFlags : u32 {
     InstFlags_Valid                = 1 << 0,
     InstFlags_DecodeRegisterMemory = 1 << 1,
     InstFlags_ExtractData          = 1 << 2,
@@ -189,6 +189,13 @@ enum InstFlags : u32{
     InstFlags_ExtractMode          = 1 << 9,
     InstFlags_Bitshift             = 1 << 10,
     InstFlags_BitshiftCL           = 1 << 11,
+    InstFlags_JumpWord             = 1 << 12,
+};
+
+enum JumpType {
+    JumpType_Displacement,
+    JumpType_Label,
+    JumpType_Far,
 };
 
 // nocheckin: instead of booleans use flags
@@ -207,6 +214,8 @@ struct DecodedInstruction {
     int decode_mnemonic_bitshift;
     u8 decode_mnemonic_mask;
     const InstructionType* decode_mnemonic_table;
+    
+    JumpType jump_type;
     
     int byte_offset;
 };
@@ -337,6 +346,7 @@ void InitializeDecodedInstructionTable() {
         DecodedInstruction* inst = &decoded_table[start_offset + i];
         inst->flags = (InstFlags_Valid | InstFlags_DecodeMnemonic);
         inst->op_encoding = OP_ENCODING_JUMP;
+        inst->jump_type = JumpType_Label;
         inst->decode_mnemonic_byte = 0;
         inst->decode_mnemonic_bitshift = 0;
         inst->decode_mnemonic_mask = 0x0F;
@@ -407,6 +417,13 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0x8F] = decoded_table[0x8D];
     decoded_table[0x8F].op_encoding = OP_ENCODING_RM;
     decoded_table[0x8F].type = InstructionType_pop; 
+    
+    inst = &decoded_table[0x9A];
+    inst->flags = (InstFlags_Valid | InstFlags_JumpWord);
+    inst->op_encoding = OP_ENCODING_JUMP;
+    inst->type = InstructionType_call;
+    inst->jump_type = JumpType_Far;
+    inst->byte_offset = 5;
     
     inst = &decoded_table[0xA8];
     inst->flags = (InstFlags_Valid | InstFlags_ExtractData);
@@ -487,6 +504,7 @@ void InitializeDecodedInstructionTable() {
         inst = &decoded_table[0xE0 + i];
         inst->flags = (InstFlags_Valid | InstFlags_DecodeMnemonic);
         inst->op_encoding = OP_ENCODING_JUMP;
+        inst->jump_type = JumpType_Label;
         inst->decode_mnemonic_byte = 0;
         inst->decode_mnemonic_bitshift = 0;
         inst->decode_mnemonic_mask = 0x03;
@@ -509,6 +527,25 @@ void InitializeDecodedInstructionTable() {
     
     decoded_table[0xE7] = decoded_table[0xE6];
     decoded_table[0xE7].flags |= InstFlags_RegisterWord;
+
+    inst = &decoded_table[0xE8];
+    inst->flags = (InstFlags_Valid | InstFlags_JumpWord);
+    inst->op_encoding = OP_ENCODING_JUMP;
+    inst->type = InstructionType_call;
+    inst->jump_type = JumpType_Displacement;
+    inst->byte_offset = 3;
+    
+    decoded_table[0xE9] = decoded_table[0xE8];
+    decoded_table[0xE9].type = InstructionType_jmp;
+    
+    decoded_table[0xEA] = decoded_table[0xE9];
+    decoded_table[0xEA].jump_type = JumpType_Far;
+    decoded_table[0xEA].byte_offset = 5;
+    
+    decoded_table[0xEB] = decoded_table[0xEA];
+    decoded_table[0xEB].flags = InstFlags_Valid;
+    decoded_table[0xEB].jump_type = JumpType_Displacement;
+    decoded_table[0xEB].byte_offset = 2;
 
     inst = &decoded_table[0xF6];
     inst->flags = (InstFlags_Valid | InstFlags_DecodeRegisterMemory | InstFlags_ExtractMode | InstFlags_DecodeMnemonic);
@@ -687,14 +724,6 @@ int main(int argc, char* argv[]) {
             i += 1;
             goto finish_instruction;
         
-        } else if (bytes[0] == 0x9A) {
-            u16 displacement = bytes[1] | (bytes[2] << 8);
-            u16 seg = bytes[3] | (bytes[4] << 8);
-
-            capture_instruction(address, "call %lu:%lu\n", seg, displacement);
-            i += 5;
-            goto finish_instruction;
-        
         } else if (bytes[0] == 0x9B) { 
             capture_instruction(address, "wait\n");
             i += 1;
@@ -782,28 +811,6 @@ int main(int argc, char* argv[]) {
                 i += 2;
             }
             
-            goto finish_instruction;
-            
-        } else if ((bytes[0] & 0xFE) == 0xE8) {
-            decoded.type = (bytes[0] & 0x01) ? InstructionType_jmp : InstructionType_call;
-            short disp = bytes[1] | (bytes[2] << 8);
-            short next_ip = address + 3 + disp;
-            
-            capture_instruction(address, "%s %ld\n", instruction_strings[decoded.type], next_ip);
-            i += 3;
-            goto finish_instruction;
-            
-        } else if (bytes[0] == 0xEA) {
-            u16 ip = bytes[1] | (bytes[2] << 8);
-            u16 cs = bytes[3] | (bytes[4] << 8);
-
-            capture_instruction(address, "jmp %lu:%lu\n", cs, ip);
-            i += 5;
-            goto finish_instruction;
-            
-        } else if (bytes[0] == 0xEB) {
-            capture_instruction(address, "jmp %lld\n", (char)bytes[1]);
-            i += 2;
             goto finish_instruction;
             
         } else if (bytes[0] >= 0xEC && bytes[0] <= 0xEF) {
@@ -967,12 +974,34 @@ int main(int argc, char* argv[]) {
             } break;
             
             case OP_ENCODING_JUMP: {
-                i += byte_count;
-                
-                Instruction* instruction = capture_instruction(address, instruction_strings[decoded.type]);
-                instruction->is_jump = true;
-                instruction->jump_address = i + (char)bytes[1];
+                short disp = 0;                
+                if (decoded.flags & InstFlags_JumpWord) {
+                    disp = bytes[1] | (bytes[2] << 8);
+                } else {
+                    disp = (char)bytes[1];
+                }
+
+                short next_ip = address + byte_count + disp;
+
+                switch (decoded.jump_type) {
+                    case JumpType_Displacement: {
+                        Instruction* inst = capture_instruction(address, "%s %ld\n", instruction_strings[decoded.type], next_ip);
+                        inst->jump_address = next_ip;
+                    } break;
                     
+                    case JumpType_Label: {
+                        Instruction* inst = capture_instruction(address, instruction_strings[decoded.type]);
+                        inst->is_jump_label = true;
+                        inst->jump_address = next_ip;
+                    } break;
+                    
+                    case JumpType_Far: {
+                        u16 cs = bytes[3] | (bytes[4] << 8);
+                        capture_instruction(address, "%s %lu:%lu\n", instruction_strings[decoded.type], cs, disp);
+                    } break;
+                }
+                    
+                i += byte_count;
                 goto finish_instruction;
             } break;
         }
@@ -1124,7 +1153,7 @@ int main(int argc, char* argv[]) {
     memset(label_addresses, 0, 1024 * sizeof(int)); 
     
     for (int i = 0; i < instruction_count; i++) {
-        if (!instructions[i].is_jump) {
+        if (!instructions[i].is_jump_label) {
             continue;
         }
     
@@ -1156,7 +1185,7 @@ int main(int argc, char* argv[]) {
         }
     
         printf(instructions[i].string);
-        if (instructions[i].is_jump) {
+        if (instructions[i].is_jump_label) {
             printf(" label_%d\n", instructions[i].jump_address);
         }
     }
