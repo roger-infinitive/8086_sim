@@ -131,6 +131,32 @@ const InstructionType group_four_mnemonics[] = {
     InstructionType_sar
 };
 
+const InstructionType jump_mnemonics[] = {
+    InstructionType_jo,
+    InstructionType_jno,
+    InstructionType_jb,
+    InstructionType_jnb,
+    InstructionType_je,
+    InstructionType_jne,
+    InstructionType_jbe,
+    InstructionType_jnbe,
+    InstructionType_js,
+    InstructionType_jns,
+    InstructionType_jp,
+    InstructionType_jnp,
+    InstructionType_jl,
+    InstructionType_jnl,
+    InstructionType_jle,
+    InstructionType_jnle
+};
+
+const InstructionType loop_mnemonics[] = {
+    InstructionType_loopnz,
+    InstructionType_loopz,
+    InstructionType_loop,
+    InstructionType_jcxz
+};
+
 enum OpEncoding {
     OP_ENCODING_NONE    = 0,
     OP_ENCODING_RM      = 1,
@@ -139,6 +165,7 @@ enum OpEncoding {
     OP_ENCODING_IMM_RM  = 4,
     OP_ENCODING_IMM_ACC = 5,
     OP_ENCODING_SEG     = 6,
+    OP_ENCODING_JUMP    = 7,
 };
 
 struct Instruction {
@@ -228,13 +255,6 @@ Instruction* capture_instruction(int address, const char* fmt, ...) {
     return instruction;
 }
 
-Instruction* capture_jump_instruction(int address, int jump_address, const char* mnemonic) {
-    Instruction* instruction = capture_instruction(address, mnemonic);
-    instruction->is_jump = true;
-    instruction->jump_address = jump_address;
-    return instruction;
-}
-
 int extract_encoded_data(u8* bytes, int current_byte, bool extract_word, bool use_signed_immediate, u16* data) {
     if (extract_word) {
         if (use_signed_immediate) {
@@ -310,6 +330,18 @@ void InitializeDecodedInstructionTable() {
         decoded_table[start_offset + 5].flags |= (InstFlags_RegisterWord | InstFlags_ExtractWord); 
         
         start_offset += 0x08;
+    }
+    
+    start_offset = 0x70;
+    for (int i = 0; i < countOf(jump_mnemonics); i++) {
+        DecodedInstruction* inst = &decoded_table[start_offset + i];
+        inst->flags = (InstFlags_Valid | InstFlags_DecodeMnemonic);
+        inst->op_encoding = OP_ENCODING_JUMP;
+        inst->decode_mnemonic_byte = 0;
+        inst->decode_mnemonic_bitshift = 0;
+        inst->decode_mnemonic_mask = 0x0F;
+        inst->decode_mnemonic_table = &jump_mnemonics[0];
+        inst->byte_offset = 2;
     }
     
     DecodedInstruction* inst = &decoded_table[0x80];
@@ -451,6 +483,17 @@ void InitializeDecodedInstructionTable() {
     decoded_table[0xD3] = decoded_table[0xD2];
     decoded_table[0xD3].flags |= InstFlags_RegisterWord;
     
+    for (int i = 0; i < countOf(loop_mnemonics); i++) {
+        inst = &decoded_table[0xE0 + i];
+        inst->flags = (InstFlags_Valid | InstFlags_DecodeMnemonic);
+        inst->op_encoding = OP_ENCODING_JUMP;
+        inst->decode_mnemonic_byte = 0;
+        inst->decode_mnemonic_bitshift = 0;
+        inst->decode_mnemonic_mask = 0x03;
+        inst->decode_mnemonic_table = &loop_mnemonics[0];
+        inst->byte_offset = 2;
+    }
+    
     inst = &decoded_table[0xE4];
     inst->flags = (InstFlags_Valid | InstFlags_ExtractData);
     inst->op_encoding = OP_ENCODING_IMM_ACC;
@@ -583,6 +626,7 @@ int main(int argc, char* argv[]) {
                 decoded.flags &= ~InstFlags_DirBit;
             }
             
+            // Since the instruction type is decoded from the second byte (InstFlags_DecodeMnemonic), the rest of the data is updated here for specific encodings. 
             if ((bytes[0] & 0xFE) == 0xF6) {
                 if (decoded.type == InstructionType_test) {
                     decoded.flags |= InstFlags_ExtractData;
@@ -632,33 +676,7 @@ int main(int argc, char* argv[]) {
             
             i += 1;
             goto finish_instruction;
-            
-        } else if ((bytes[0] & 0xF0) == 0x70) {
-            InstructionType mnemonics[] = {
-                InstructionType_jo,
-                InstructionType_jno,
-                InstructionType_jb,
-                InstructionType_jnb,
-                InstructionType_je,
-                InstructionType_jne,
-                InstructionType_jbe,
-                InstructionType_jnbe,
-                InstructionType_js,
-                InstructionType_jns,
-                InstructionType_jp,
-                InstructionType_jnp,
-                InstructionType_jl,
-                InstructionType_jnl,
-                InstructionType_jle,
-                InstructionType_jnle
-            };
-            
-            decoded.type = mnemonics[bytes[0] & 0x0F];
-            
-            i += 2; // move forward before capturing target address.
-            capture_jump_instruction(address, i + (char)bytes[1], instruction_strings[decoded.type]);
-            goto finish_instruction;
-        
+
         } else if (bytes[0] >= 0x90 && bytes[0] <= 0x97) {
             capture_instruction(address, "xchg ax, %s\n", register_map_word[bytes[0] & 0x0F]);
             i += 1;
@@ -764,18 +782,6 @@ int main(int argc, char* argv[]) {
                 i += 2;
             }
             
-            goto finish_instruction;
-            
-        } else if ((bytes[0] & 0xFC) == 0xE0) {
-            const char* mnemonics[] = {
-                "loopnz",
-                "loopz",
-                "loop",
-                "jcxz",
-            };
-        
-            i += 2; 
-            capture_jump_instruction(address, i + (char)bytes[1], mnemonics[bytes[0] & 0x03]);
             goto finish_instruction;
             
         } else if ((bytes[0] & 0xFE) == 0xE8) {
@@ -957,6 +963,16 @@ int main(int argc, char* argv[]) {
                 }
             
                 i += byte_count;    
+                goto finish_instruction;
+            } break;
+            
+            case OP_ENCODING_JUMP: {
+                i += byte_count;
+                
+                Instruction* instruction = capture_instruction(address, instruction_strings[decoded.type]);
+                instruction->is_jump = true;
+                instruction->jump_address = i + (char)bytes[1];
+                    
                 goto finish_instruction;
             } break;
         }
